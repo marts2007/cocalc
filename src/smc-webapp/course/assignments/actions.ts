@@ -11,9 +11,9 @@ Actions involving working with assignments:
 export const STUDENT_SUBDIR = "student";
 
 // default timeout of 1 minute per cell
-export const NBGRADER_CELL_TIMEOUT_MS: number = 60 * 1000;
+export const NBGRADER_CELL_TIMEOUT_MS: number = 60 * 60 * 1000;
 // default timeout of 10 minutes for whole notebook
-export const NBGRADER_TIMEOUT_MS: number = 10 * 60 * 1000;
+export const NBGRADER_TIMEOUT_MS: number = 60 * 60 * 1000;
 
 // default max output of 1 million characters per cell
 export const NBGRADER_MAX_OUTPUT_PER_CELL: number = 500000;
@@ -1330,6 +1330,7 @@ ${details}
      true; otherwise, return false.
   */
   private async has_nbgrader_metadata(assignment_id: string): Promise<boolean> {
+    console.log("run_nbgrader_for_all_students ", assignment_id);
     return len(await this.nbgrader_instructor_ipynb_files(assignment_id)) > 0;
   }
 
@@ -1428,6 +1429,7 @@ ${details}
         this.get_store().get_nbgrader_parallel(),
         one_student
       );
+      console.log("nbgrader: commiting all datas to syncdb");
       this.course_actions.syncdb.commit();
     } finally {
       this.nbgrader_set_is_done(assignment_id);
@@ -1554,7 +1556,7 @@ ${details}
     commit: boolean = true
   ): Promise<void> {
     // console.log("run_nbgrader_for_one_student", assignment_id, student_id);
-
+    console.log("run_nbgrader_for_one_student ", assignment_id, student_id);
     const { store, assignment, student } = this.course_actions.resolve({
       assignment_id,
       student_id,
@@ -1620,12 +1622,12 @@ ${details}
       if (this.course_actions.is_closed()) return;
     }
     if (len(instructor_ipynb_files) == 0) {
-      /* console.log(
+       console.log(
         "run_nbgrader_for_one_student",
         assignment_id,
         student_id,
         "done -- no ipynb files"
-      ); */
+      );
       return; // nothing to do
     }
 
@@ -1663,7 +1665,7 @@ ${details}
         });
 
         try {
-          const did_start = await start_project(grade_project_id, 60);
+          const did_start = await start_project(grade_project_id, 60 * 120);
           // if *we* started the student project, we'll also stop it afterwards
           if (!nbgrader_grade_project) {
             stop_student_project = did_start;
@@ -1713,17 +1715,26 @@ ${details}
           path: student_path,
           project_id: grade_project_id,
         };
-        /*console.log(
+        console.log(
           student_id,
           file,
           "about to launch autograding with input ",
           opts
-        );*/
+        );
+        
         const r = await nbgrader(opts);
-        /* console.log(student_id, "autograding finished successfully", {
+       #do not save solution to the students folder
+       # await this.write_autograded_notebook(
+       #      assignment,
+       #      student_id,
+       #      "graded_file_" + file,
+       #      r.autograde
+       # );
+
+        console.log(student_id, "autograding finished successfully", {
           file,
           r,
-        });*/
+        });
         result[file] = r;
 
         if (!nbgrader_grade_project && stop_student_project) {
@@ -1737,7 +1748,7 @@ ${details}
           }
         }
       } catch (err) {
-        // console.log("nbgrader failed", { student_id, file, err });
+        console.log("nbgrader failed", { student_id, file, err });
         scores[file] = `${err}`;
       } finally {
         this.course_actions.clear_activity(activity_id);
@@ -1758,10 +1769,10 @@ ${details}
     } finally {
       this.nbgrader_set_is_done(assignment_id, student_id);
     }
-    /* console.log("ran nbgrader for all files for a student", {
+    console.log("ran nbgrader for all files for a student", {
       student_id,
       result
-    }); */
+    });
     // Save any previous nbgrader scores for this student, so we can
     // preserve any manually entered scores, rather than overwrite them.
     const prev_scores = store.get_nbgrader_scores(assignment_id, student_id);
@@ -1781,6 +1792,7 @@ ${details}
       // is what it is:
       const notebook = JSON.parse(r.output);
       scores[filename] = extract_auto_scores(notebook);
+      console.log("extract_auto_scores ");
       if (
         prev_scores != null &&
         prev_scores[filename] != null &&
@@ -1808,7 +1820,7 @@ ${details}
         JSON.stringify(notebook, undefined, 2)
       );
     }
-
+    console.log("scores ", scores);
     this.set_nbgrader_scores_for_one_student(
       assignment_id,
       student_id,
