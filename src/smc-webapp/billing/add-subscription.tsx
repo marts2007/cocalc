@@ -15,7 +15,7 @@ import {
 import { Icon } from "../r_misc/icon";
 import { PROJECT_UPGRADES } from "smc-util/schema";
 import { COLORS } from "smc-util/theme";
-import { capitalize, endswith } from "smc-util/misc2";
+import { capitalize, endswith } from "smc-util/misc";
 import { Component, React, Rendered, redux } from "../app-framework";
 import { AppliedCoupons, Customer, PeriodName } from "./types";
 import { ConfirmPaymentMethod } from "./confirm-payment-method";
@@ -23,6 +23,7 @@ import { powered_by_stripe } from "./util";
 import { ExplainResources } from "./explain-resources";
 import { SubscriptionGrid } from "./subscription-grid";
 import { CouponAdder } from "./coupon-adder";
+const { HelpEmailLink } = require("../customize");
 
 interface Props {
   on_close: Function;
@@ -147,12 +148,62 @@ export class AddSubscription extends Component<Props, State> {
     }
   }
 
-  private render_subscription_grid(): Rendered {
+  private is_deprecated(): boolean {
+    // dumb code since we'll just delete it soon anyways.
     return (
-      <SubscriptionGrid
-        periods={[this.state.selected_button]}
-        selected_plan={this.props.selected_plan}
-      />
+      this.state.selected_button == "week" ||
+      this.state.selected_button == "month4" ||
+      this.state.selected_button == "year1"
+    );
+  }
+
+  private render_subscription_grid(): Rendered {
+    const deprecated = (
+      <Well
+        style={{
+          fontSize: "12pt",
+          background: "white",
+          margin: "0px auto 15px",
+          maxWidth: "800px",
+        }}
+      >
+        Please{" "}
+        <a
+          onClick={() => {
+            redux.getActions("account").setState({ active_page: "licenses" });
+          }}
+        >
+          purchase a much more flexible license instead...
+        </a>{" "}
+        {this.is_deprecated() ? (
+          <div>
+            The new licenses let you specify exactly how many students you have,
+            when the course starts and ends, and how much memory, disk space,
+            and cpu each student gets.
+            <br />
+            <br />
+            If for some reason you need to purchase one of the old course
+            package, please contact <HelpEmailLink />.
+          </div>
+        ) : (
+          <div>
+            It is still possible to buy one of the subscriptions below, but we
+            strongly recommend against it.
+          </div>
+        )}
+      </Well>
+    );
+    if (this.is_deprecated()) {
+      return deprecated;
+    }
+    return (
+      <div>
+        {deprecated}
+        <SubscriptionGrid
+          periods={[this.state.selected_button]}
+          selected_plan={this.props.selected_plan}
+        />
+      </div>
     );
   }
 
@@ -243,6 +294,7 @@ export class AddSubscription extends Component<Props, State> {
   }
 
   private render_create_subscription_buttons(): Rendered {
+    if (this.is_deprecated()) return;
     return (
       <Row>
         <Col sm={4}>{powered_by_stripe()}</Col>

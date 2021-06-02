@@ -3,10 +3,8 @@
  *  License: AGPLv3 s.t. "Commons Clause" – see LICENSE.md for details
  */
 
-// ../ prefix to make manage-pods work
-import { callback2 } from "../smc-util/async-utils";
-import { trunc } from "../smc-util/misc2";
-
+import { callback2 } from "smc-util/async-utils";
+import { trunc } from "smc-util/misc";
 import { PostgreSQL } from "./types";
 
 export interface Patch {
@@ -74,7 +72,12 @@ export async function syncdoc_history(
     query =
       "SELECT time, user_id, format, length(patch) as patch_length FROM patches";
   }
-  const results = await callback2(db._query, { query, where, order_by });
+  const results = await callback2(db._query, {
+    query,
+    where,
+    order_by,
+    timeout_s: 300,
+  });
   const patches: Patch[] = [];
   function format_patch(row): Patch {
     const patch: Patch = { time_utc: row.time, format: row.format };

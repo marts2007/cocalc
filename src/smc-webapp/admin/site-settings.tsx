@@ -18,7 +18,7 @@ import {
 } from "../app-framework";
 
 import { query } from "../frame-editors/generic/client";
-import { copy, deep_copy, keys, unreachable } from "smc-util/misc2";
+import { copy, deep_copy, keys, unreachable } from "smc-util/misc";
 
 import { site_settings_conf } from "smc-util/schema";
 import { ON_PREM_DEFAULT_QUOTAS } from "smc-util/upgrade-spec";
@@ -44,6 +44,7 @@ import { COLORS } from "smc-util/theme";
 import { Input } from "antd";
 
 import {
+  CopyToClipBoard,
   Icon,
   Markdown,
   ErrorDisplay,
@@ -211,9 +212,14 @@ class SiteSettingsComponent extends Component<
     return (
       <div style={{ marginTop: "15px", color: "#666" }}>
         Your browser version:{" "}
-        <code style={{ background: "white", fontSize: "10pt" }}>
-          {smc_version.version}
-        </code>{" "}
+        <CopyToClipBoard
+          style={{
+            display: "inline-block",
+            width: "50ex",
+            margin: 0,
+          }}
+          value={`${smc_version.version}`}
+        />{" "}
         {error}
       </div>
     );

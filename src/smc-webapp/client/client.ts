@@ -2,7 +2,7 @@
  *  This file is part of CoCalc: Copyright © 2020 Sagemath, Inc.
  *  License: AGPLv3 s.t. "Commons Clause" – see LICENSE.md for details
  */
-import { bind_methods } from "smc-util/misc2";
+import { bind_methods } from "smc-util/misc";
 import { EventEmitter } from "events";
 import { delay } from "awaiting";
 import { alert_message } from "../alerts";
@@ -21,6 +21,7 @@ import { TrackingClient } from "./tracking";
 import { HubClient } from "./hub";
 import { IdleClient } from "./idle";
 import { version } from "smc-util/smc-version";
+import { start_metrics } from "../prom-client";
 
 export type AsyncCall = (opts: object) => Promise<any>;
 
@@ -235,7 +236,6 @@ class Client extends EventEmitter implements WebappClient {
   }
 
   private init_prom_client(): void {
-    const { start_metrics } = require("../prom-client");
     this.on("start_metrics", start_metrics);
   }
 

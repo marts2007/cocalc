@@ -1232,6 +1232,11 @@ API(
         init: undefined,
         desc: "(optional) image ID",
       },
+      license: {
+        init: undefined,
+        desc:
+          "(optional) license id (or multiple ids separated by commas) -- if given, project will be created with this license",
+      },
       start: {
         init: false,
         desc:
@@ -1355,6 +1360,62 @@ Email and string search types may be mixed in a single query:
     -d 'query=foo bar,jd@m.local' \\
     -d limit=4 \\
     https://cocalc.com/api/v1/user_search
+\`\`\`\
+`,
+  })
+);
+
+API(
+  message2({
+    event: "add_license_to_project",
+    fields: {
+      id: {
+        init: undefined,
+        desc: "A unique UUID for the message",
+      },
+      project_id: {
+        init: required,
+        desc: "project_id",
+      },
+      license_id: {
+        init: required,
+        desc: "id of a license",
+      },
+    },
+    desc: `\
+Add a license to a project.
+
+Example:
+\`\`\`
+   example not available yet
+\`\`\`\
+`,
+  })
+);
+
+API(
+  message2({
+    event: "remove_license_from_project",
+    fields: {
+      id: {
+        init: undefined,
+        desc: "A unique UUID for the message",
+      },
+      project_id: {
+        init: required,
+        desc: "project_id",
+      },
+      license_id: {
+        init: required,
+        desc: "id of a license",
+      },
+    },
+    desc: `\
+Remove a license from a project.
+
+Example:
+\`\`\`
+   example not available yet
 \`\`\`\
 `,
   })
@@ -2305,14 +2366,6 @@ API(
 
 // subscriptions to plans
 
-// Get a list of all currently available plans:
-API(
-  message({
-    event: "stripe_get_plans",
-    id: undefined,
-  })
-);
-
 API(
   message({
     event: "stripe_plans",
@@ -3077,6 +3130,14 @@ message({
   id: undefined,
 });
 
+// Ensures the expire date on licenses paid by subscriptions matches stripe customer field.
+// Call this to ensure expire gets set when it should be, but also gets unset when customer
+// has paid.
+message({
+  event: "stripe_sync_site_license_subscriptions",
+  id: undefined,
+});
+
 /*
 Sage Worksheet Support, v2
 */
@@ -3174,4 +3235,19 @@ message({
   id: undefined,
   account_id: required,
   ban: required, // if true ban; if false, unban
+});
+
+// Request to purchase a license (either via stripe or a quote)
+API(
+  message({
+    event: "purchase_license",
+    id: undefined,
+    info: required, // import { PurchaseInfo } from "smc-webapp/site-licenses/purchase/util";
+  })
+);
+
+message({
+  event: "purchase_license_resp",
+  id: undefined,
+  resp: required, // a string - basically a message to show the user
 });

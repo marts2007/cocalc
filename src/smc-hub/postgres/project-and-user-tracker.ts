@@ -16,9 +16,9 @@
 import { EventEmitter } from "events";
 
 import { callback } from "awaiting";
-import { callback2 } from "../smc-util/async-utils";
+import { callback2 } from "smc-util/async-utils";
 
-import { len } from "../smc-util/misc2";
+import { close, len } from "smc-util/misc";
 
 import { PostgreSQL, QueryOptions, QueryResult } from "./types";
 
@@ -126,13 +126,6 @@ export class ProjectAndUserTracker extends EventEmitter {
     if (this.feed != null) {
       this.feed.close();
     }
-    delete this.feed;
-    delete this.db;
-    delete this.accounts;
-    delete this.users;
-    delete this.projects;
-    delete this.collabs;
-
     if (this.register_todo != null) {
       // clear any outstanding callbacks
       for (const account_id in this.register_todo) {
@@ -143,8 +136,9 @@ export class ProjectAndUserTracker extends EventEmitter {
           }
         }
       }
-      delete this.register_todo;
     }
+    close(this);
+    this.state = "closed";
   }
 
   private handle_change_delete(old_val): void {
@@ -370,9 +364,11 @@ export class ProjectAndUserTracker extends EventEmitter {
       // Register this account
       let projects: QueryResult[];
       try {
+        // 2021-05-10: one user has a really large number of projects, which causes the hub to crash
+        // TODO: fix this ORDER BY .. LIMIT .. part properly
         projects = await query(this.db, {
           query:
-            "SELECT project_id, json_agg(o) as users FROM (select project_id, jsonb_object_keys(users) AS o FROM projects WHERE users ? $1::TEXT) s group by s.project_id",
+            "SELECT project_id, json_agg(o) as users FROM (SELECT project_id, jsonb_object_keys(users) AS o FROM projects WHERE users ? $1::TEXT ORDER BY last_edited DESC LIMIT 10000) s group by s.project_id",
           params: [account_id],
         });
       } catch (err) {
@@ -467,6 +463,7 @@ export class ProjectAndUserTracker extends EventEmitter {
   // map from collabs of account_id to number of projects they collab
   // on (account_id itself counted twice)
   public get_collabs(account_id: string): { [account_id: string]: number } {
+    if (this.state == "closed") return {};
     return this.collabs[account_id] != null ? this.collabs[account_id] : {};
   }
 

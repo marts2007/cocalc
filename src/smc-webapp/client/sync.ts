@@ -9,13 +9,15 @@ Functionality related to Sync.
 
 import { callback2 } from "smc-util/async-utils";
 import { once } from "smc-util/async-utils";
-import { is_valid_uuid_string, merge } from "smc-util/misc2";
-import { defaults, required } from "smc-util/misc";
+import { defaults, is_valid_uuid_string, merge, required } from "smc-util/misc";
 import { SyncDoc, SyncOpts0 } from "smc-util/sync/editor/generic/sync-doc";
+
 interface SyncOpts extends Omit<SyncOpts0, "client"> {}
 
 import { SyncDB, SyncDBOpts0 } from "smc-util/sync/editor/db";
-interface SyncDBOpts extends Omit<SyncDBOpts, "client"> {}
+interface SyncDBOpts extends Omit<SyncDBOpts0, "client" | "string_cols"> {
+  string_cols?: string[];
+}
 
 import { SyncString } from "smc-util/sync/editor/string/sync";
 import {
@@ -176,5 +178,4 @@ export class SyncClient {
     const f = `sync_${doctype.type}`;
     return (this as any)[f](opts2);
   }
-
 }

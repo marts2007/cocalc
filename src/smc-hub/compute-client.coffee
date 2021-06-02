@@ -1693,6 +1693,17 @@ class ProjectClient extends EventEmitter
         @_synctable?.connect()
         @dbg("stop")("will kill all processes")
         async.series([
+            ###
+            # Uncomment all this to simulate slow stopping more
+            # like in Kubernetes.
+            (cb) =>
+                @_set_state
+                    state      : 'stopping'
+                    time       : new Date()
+                    cb         : cb
+            (cb) =>
+                setTimeout(cb, 10000)
+            ###
             (cb) =>
                 @_action
                     action : "stop"
@@ -2124,11 +2135,18 @@ class ProjectClient extends EventEmitter
         # Ignore any quotas that aren't in the list below: these are the only ones that
         # the local compute server supports.   It is convenient to allow the caller to
         # pass in additional quota settings.
-        opts = misc.copy_with(opts, ['disk_quota', 'cores', 'memory', 'cpu_shares', 'network', 'mintime', 'member_host', 'ephemeral_state', 'ephemeral_disk', 'always_running', 'cb'])
         dbg = @dbg("set_quotas")
         dbg("set various quotas...")
+        opts = misc.copy_with(opts, ['disk_quota', 'cores', 'memory', 'cpu_shares', 'network', 'mintime', 'member_host', 'ephemeral_state', 'ephemeral_disk', 'always_running', 'cb'])
         commands = undefined
         async.series([
+            (cb) =>
+                dbg("merge quotas into the run_quota")
+                try
+                    await @compute_server.database.set_run_quota(@project_id, misc.copy_without(opts, ['cb']))
+                    cb()
+                catch err
+                    cb(err)
             (cb) =>
                 if not opts.member_host?
                     cb()

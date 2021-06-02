@@ -11,27 +11,27 @@
 //    - [x] is scrollable
 //    - [x] is zoomable
 //    - [x] math is properly typeset
-//    - [x] checkbox in markdown are interactive (can click them, which edits file)
 
 import { Markdown } from "smc-webapp/r_misc";
-import { is_different, path_split } from "smc-util/misc2";
-import { throttle } from "underscore";
+import { is_different, path_split } from "smc-util/misc";
+import { debounce } from "lodash";
 import { React, ReactDOM, CSS } from "../../app-framework";
 import { use_font_size_scaling } from "../frame-tree/hooks";
-import { process_checkboxes } from "../../editors/task-editor/desc-rendering";
-import { apply_without_math } from "smc-util/mathjax-utils-2";
-import { MAX_WIDTH_NUM } from "../options";
+import { EditorState } from "../frame-tree/types";
+import { Actions } from "./actions";
+import { Path } from "../frame-tree/path";
 
 interface Props {
-  actions: any;
+  actions: Actions;
   id: string;
   path: string;
   project_id: string;
   font_size: number;
   read_only: boolean;
   value: string;
-  editor_state: any;
+  editor_state: EditorState;
   reload_images: boolean;
+  is_current: boolean;
 }
 
 function should_memoize(prev, next): boolean {
@@ -43,6 +43,7 @@ function should_memoize(prev, next): boolean {
     "read_only",
     "value",
     "reload_images",
+    "is_current",
   ]);
 }
 
@@ -53,10 +54,10 @@ export const RenderedMarkdown: React.FC<Props> = React.memo((props: Props) => {
     path,
     project_id,
     font_size,
-    read_only,
     value,
     editor_state,
     reload_images,
+    is_current,
   } = props;
 
   const scroll = React.useRef<HTMLDivElement>(null);
@@ -74,45 +75,55 @@ export const RenderedMarkdown: React.FC<Props> = React.memo((props: Props) => {
       return;
     }
     const scroll_val = $(elt).scrollTop();
-    actions.save_editor_state(id, { scroll_val });
+    actions.save_editor_state(id, { scroll: scroll_val });
   }
 
   async function restore_scroll(): Promise<void> {
     const scroll_val = editor_state.get("scroll");
     const elt = $(ReactDOM.findDOMNode(scroll.current));
-    if (elt.length === 0) return;
-    elt.scrollTop(scroll_val);
-    elt.find("img").on("load", function () {
+    try {
+      if (elt.length === 0) {
+        return;
+      }
+      await delay(0); // wait until render happens
       elt.scrollTop(scroll_val);
-    });
+      await delay(0);
+      elt.css("opacity", 1);
+
+      // do any scrolling after image loads
+      elt.find("img").on("load", function () {
+        elt.scrollTop(scroll_val);
+      });
+    } finally {
+      // for sure change opacity to 1 so visible after
+      // doing whatever scrolling above
+      elt.css("opacity", 1);
+    }
   }
 
-  function on_click(e): void {
-    // same idea as in tasks/desc-rendered.cjsx
-    if (read_only) {
+  function goto_source_line(event) {
+    let elt = event.target;
+    while (elt != null && elt.dataset?.sourceLine == null) {
+      elt = elt.parentElement;
+    }
+    if (elt == null) return;
+    const line = elt.dataset?.sourceLine;
+    if (line != null) {
+      actions.programmatical_goto_line(line);
       return;
     }
-    if (!e.target) return;
-    const data = e.target.dataset;
-    if (!data || !data.checkbox) return;
-    e.stopPropagation();
-    actions.toggle_markdown_checkbox(
-      id,
-      parseInt(data.index),
-      data.checkbox === "true"
-    );
   }
 
-  const value_md = apply_without_math(value, process_checkboxes);
   const style: CSS = {
     overflowY: "auto",
     width: "100%",
+    opacity: 0, // changed to 1 after initial scroll to avoid flicker
   };
   const style_inner: CSS = {
     ...{
-      maxWidth: `${(1 + (scaling - 1) / 2) * MAX_WIDTH_NUM}px`,
-      margin: "10px auto",
-      padding: "0 10px",
+      padding: "40px 70px",
+      backgroundColor: "white",
+      overflowY: "auto",
     },
     ...{
       // transform: scale() and transformOrigin: "0 0" or "center 0"
@@ -122,23 +133,27 @@ export const RenderedMarkdown: React.FC<Props> = React.memo((props: Props) => {
   };
 
   return (
-    <div
-      style={style}
-      ref={scroll}
-      onScroll={throttle(() => on_scroll(), 250)}
-      onClick={(e) => on_click(e)}
-      /* this cocalc-editor-div class is needed for a safari hack only */
-      className={"cocalc-editor-div"}
-    >
-      <div style={style_inner}>
-        <Markdown
-          value={value_md}
-          project_id={project_id}
-          file_path={path_split(path).head}
-          safeHTML={true}
-          reload_images={reload_images}
-          highlight_code={true}
-        />
+    <div className="smc-vfill" style={{ backgroundColor: "#eee" }}>
+      <Path is_current={is_current} path={path} project_id={project_id} />
+      <div
+        style={style}
+        ref={scroll}
+        onScroll={debounce(() => on_scroll(), 200)}
+        /* this cocalc-editor-div class is needed for a safari hack only */
+        className={"cocalc-editor-div smc-vfill"}
+      >
+        <div style={style_inner} className="smc-vfill">
+          <Markdown
+            line_numbers={true}
+            onDoubleClick={goto_source_line}
+            value={value}
+            project_id={project_id}
+            file_path={path_split(path).head}
+            safeHTML={true}
+            reload_images={reload_images}
+            highlight_code={true}
+          />
+        </div>
       </div>
     </div>
   );

@@ -5,9 +5,7 @@
 
 import { EventEmitter } from "events";
 import { Map as iMap } from "immutable";
-
-import { delete_null_fields, len } from "../../../misc2";
-
+import { close, delete_null_fields, len } from "../../../misc";
 import { SyncDoc } from "./sync-doc";
 import { SyncTable } from "../../table/synctable";
 import { Client } from "./types";
@@ -232,8 +230,8 @@ export class IpywidgetsState extends EventEmitter {
   public async close(): Promise<void> {
     if (this.table != null) {
       await this.table.close();
-      delete this.table;
     }
+    close(this);
     this.set_state("closed");
   }
 

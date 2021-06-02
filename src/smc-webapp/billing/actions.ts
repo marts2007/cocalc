@@ -10,12 +10,17 @@ These are mainly for interfacing with Stripe.  They are
 all async (no callbacks!).
 */
 
-import { Map } from "immutable";
+import { fromJS, Map } from "immutable";
 import { redux, Actions, Store } from "../app-framework";
 import { reuse_in_flight_methods } from "smc-util/async-utils";
-import { server_minutes_ago, server_time } from "smc-util/misc";
+import {
+  server_minutes_ago,
+  server_time,
+  server_days_ago,
+} from "smc-util/misc";
 import { webapp_client } from "../webapp-client";
 import { StripeClient } from "../client/stripe";
+import { getManagedLicenses } from "../account/licenses/util";
 
 import { BillingStoreState } from "./store";
 
@@ -150,14 +155,13 @@ export class BillingActions extends Actions<BillingStoreState> {
     }
     let coupon: any;
     this.setState({ error: "" });
-    // TODO: Support multiple coupons.
     const applied_coupons = this.store.get("applied_coupons");
     if (applied_coupons != null && applied_coupons.size > 0) {
       coupon = applied_coupons.first();
     }
     const opts = {
       plan,
-      coupon_id: coupon != null ? coupon.id : undefined,
+      coupon_id: coupon?.id,
     };
     await this.stripe_action(
       this.stripe.create_subscription,
@@ -250,6 +254,33 @@ export class BillingActions extends Actions<BillingStoreState> {
       }
     }
     this.setState({ selected_plan: plan });
+  }
+
+  public async update_managed_licenses(): Promise<void> {
+    // Make sure the license subscriptions in the backend are sync'd
+    // with stripe subscriptions (e.g., expire state).
+    await webapp_client.stripe.sync_site_license_subscriptions();
+    // Update the license state in the frontend
+    const v = await getManagedLicenses();
+    const all_managed_license_ids = fromJS(v.map((x) => x.id));
+
+    const day_ago = server_days_ago(1);
+    const managed_license_ids = fromJS(
+      v
+        .filter((x) => x.expires == null || x.expires >= day_ago)
+        .map((x) => x.id)
+    );
+
+    const x: { [license_id: string]: object } = {};
+    for (const license of v) {
+      x[license.id] = license;
+    }
+    const managed_licenses = fromJS(x);
+    this.setState({
+      managed_licenses,
+      managed_license_ids,
+      all_managed_license_ids,
+    });
   }
 }
 

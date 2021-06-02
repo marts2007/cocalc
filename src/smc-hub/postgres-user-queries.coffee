@@ -990,9 +990,14 @@ exports.extend_PostgreSQL = (ext) -> class PostgreSQL extends ext
             for y, z of x
                 user_options[y] = true
 
-        if r.client_query.get.options?
+        get_options = undefined
+        if @is_heavily_loaded() and r.client_query.get.options_load?
+            get_options = r.client_query.get.options_load
+        else if r.client_query.get.options?
+            get_options = r.client_query.get.options
+        if get_options?
             # complicated since options is a list of {opt:val} !
-            for x in r.client_query.get.options
+            for x in get_options
                 for y, z of x
                     if not user_options[y]
                         opts.options.push(x)
@@ -1016,6 +1021,11 @@ exports.extend_PostgreSQL = (ext) -> class PostgreSQL extends ext
         dbg()
 
         pg_where = client_query.get.pg_where
+
+        if @is_heavily_loaded() and client_query.get.pg_where_load?
+            # use a different query if load is heavy
+            pg_where = client_query.get.pg_where_load
+
         if not pg_where?
             pg_where = []
         if pg_where == 'projects'
@@ -1446,6 +1456,7 @@ exports.extend_PostgreSQL = (ext) -> class PostgreSQL extends ext
         locals =
             result     : undefined
             changes_cb : undefined
+
         async.series([
             (cb) =>
                 if client_query.get.check_hook?
@@ -1479,6 +1490,16 @@ exports.extend_PostgreSQL = (ext) -> class PostgreSQL extends ext
                     return
                 misc.merge(_query_opts, x)
 
+                nestloop = SCHEMA[opts.table]?.pg_nestloop  # true, false or undefined
+                if typeof nestloop == 'boolean'
+                    val = if nestloop then 'on' else 'off'
+                    _query_opts.pg_params = {enable_nestloop : val}
+
+                indexscan = SCHEMA[opts.table]?.pg_indexscan  # true, false or undefined
+                if typeof indexscan == 'boolean'
+                    val = if indexscan then 'on' else 'off'
+                    _query_opts.pg_params = {enable_indexscan : val}
+
                 if opts.changes?
                     locals.changes_cb = opts.changes.cb
                     locals.changes_queue = []
@@ -1491,8 +1512,8 @@ exports.extend_PostgreSQL = (ext) -> class PostgreSQL extends ext
                                                 opts.account_id, client_query, cb)
                 else
                     cb()
-            (cb) =>
 
+            (cb) =>
                 if client_query.get.instead_of_query?
                     if opts.changes?
                         cb("changefeeds are not supported for querying this table")

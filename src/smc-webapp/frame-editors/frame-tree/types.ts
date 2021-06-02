@@ -58,8 +58,12 @@ export interface EditorDescription {
   gutters?: string[]; // I think it's cm gutters
   renderer?: string; // e.g., "canvas" or "svg"
   hide_public?: boolean; // if true, do not show this editor option (in title bar dropdown) when viewing file publicly.
+  clear_info?: { text: string; confirm: string };
+  guide_info?: { title?: string; descr?: string; icon?: string };
 }
 
 export interface EditorSpec {
   [editor_name: string]: EditorDescription;
 }
+
+export type EditorState = Map<string, any>; // TODO: use TypeMap and do this right.

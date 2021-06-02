@@ -3,10 +3,11 @@
  *  License: AGPLv3 s.t. "Commons Clause" – see LICENSE.md for details
  */
 
-import { Map, Set } from "immutable";
+import { List, Map, Set } from "immutable";
 
-import { redux, Store } from "../app-framework";
+import { redux, Store, TypedMap } from "../app-framework";
 import { AppliedCoupons, CoursePay, Customer, Invoices } from "./types";
+import { SiteLicense } from "smc-util/db-schema/site-licenses";
 
 export interface BillingStoreState {
   stripe_publishable_key?: string;
@@ -15,12 +16,16 @@ export interface BillingStoreState {
   error?: string;
   action?: string;
   no_stripe?: boolean;
-  customer?: Customer;
-  invoices?: Invoices;
+  customer?: TypedMap<Customer>;
+  invoices?: TypedMap<Invoices>;
   loaded?: boolean;
   continue_first_purchase?: boolean;
   selected_plan?: string;
   course_pay: CoursePay;
+  managed_license_ids?: List<string[]>; // array of active (or recently expired) id's of license you manage. Not a changefeed -- you must explicitly call update_managed_licenses action.
+  all_managed_license_ids?: List<string[]>; // same as managed_license_ids, but also includes all expired licenses.
+  managed_licenses?: Map<string, TypedMap<SiteLicense>>; // actual data of the licenses.
+  subscription_list_state?: "view" | "buy_upgrades" | "buy_license";
 }
 
 export class BillingStore extends Store<BillingStoreState> {}

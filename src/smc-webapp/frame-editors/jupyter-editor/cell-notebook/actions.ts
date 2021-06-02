@@ -3,16 +3,15 @@
  *  License: AGPLv3 s.t. "Commons Clause" – see LICENSE.md for details
  */
 
-/*
- * license
- */
-
 import { Set } from "immutable";
 import { delay } from "awaiting";
-
-import { enumerate, is_whitespace, lstrip } from "smc-util/misc";
-import { bind_methods } from "smc-util/misc2";
-
+import {
+  bind_methods,
+  close,
+  enumerate,
+  is_whitespace,
+  lstrip,
+} from "smc-util/misc";
 import { JupyterEditorActions } from "../actions";
 import { NotebookFrameStore } from "./store";
 import { create_key_handler } from "../../../jupyter/keyboard";
@@ -29,6 +28,7 @@ import { isEqual } from "lodash";
 declare let DEBUG: boolean;
 
 export class NotebookFrameActions {
+  private _is_closed: boolean = false;
   private frame_tree_actions: JupyterEditorActions;
   private jupyter_actions: JupyterActions;
   private key_handler?: Function;
@@ -43,11 +43,7 @@ export class NotebookFrameActions {
   private windowed_list_ref?: any;
 
   constructor(frame_tree_actions: JupyterEditorActions, frame_id: string) {
-    bind_methods(this, [
-      "update_cur_id",
-      "syncdb_before_change",
-      "syncdb_after_change",
-    ]);
+    bind_methods(this);
 
     // General frame tree editor actions:
     this.frame_tree_actions = frame_tree_actions;
@@ -174,6 +170,10 @@ export class NotebookFrameActions {
     }
   }
 
+  public is_closed(): boolean {
+    return this._is_closed;
+  }
+
   public close(): void {
     this.jupyter_actions.store.removeListener(
       "syncdb-before-change",
@@ -187,15 +187,9 @@ export class NotebookFrameActions {
       "syncdb-after-change",
       this.syncdb_after_change
     );
-    delete this.commands;
-    delete this.frame_tree_actions;
-    delete this.jupyter_actions;
-    delete this.frame_id;
-    delete this.key_handler;
-    delete this.input_editors;
     this.store.close();
-    delete this.store;
-    delete this.cell_list_div;
+    close(this);
+    this._is_closed = true;
   }
 
   /***
@@ -880,10 +874,6 @@ export class NotebookFrameActions {
     } else {
       throw Error(`insert_image -- cell must be a markdown cell`);
     }
-  }
-
-  public async show_code_snippets(): Promise<void> {
-    await this.jupyter_actions.show_code_snippets(this.store.get("cur_id"));
   }
 
   public toggle_selected_outputs(property: "collapsed" | "scrolled"): void {

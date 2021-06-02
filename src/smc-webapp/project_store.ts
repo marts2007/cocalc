@@ -15,10 +15,7 @@ if (typeof window !== "undefined" && window !== null) {
   wrapped_editors = require("./editors/react-wrapper");
 }
 import * as immutable from "immutable";
-
 import * as misc from "smc-util/misc";
-import { startswith } from "smc-util/misc2";
-
 import { QUERIES, FILE_ACTIONS, ProjectActions } from "./project_actions";
 import {
   Available as AvailableFeatures,
@@ -57,6 +54,13 @@ const MASKED_FILE_EXTENSIONS = {
   sage: ["sage.py"],
 };
 
+export type ModalInfo = TypedMap<{
+  title: string | JSX.Element;
+  content: string | JSX.Element;
+  onOk?: any;
+  onCancel?: any;
+}>;
+
 export interface ProjectStoreState {
   // Shared
   current_path: string;
@@ -92,7 +96,6 @@ export interface ProjectStoreState {
   new_name?: string;
   most_recent_file_click?: string;
   show_library: boolean;
-  show_new: boolean;
   file_listing_scroll_top?: number;
   new_filename?: string;
   ext_selection?: string;
@@ -107,10 +110,9 @@ export interface ProjectStoreState {
   default_filename?: string;
   file_creation_error?: string;
   downloading_file: boolean;
-  library: immutable.Map<any, any>;
-  library_selected?: object;
-  library_is_copying: boolean; // for the copy button, to signal an ongoing copy process
-  library_docs_sorted?: any; //computed(immutable.List),
+  library?: immutable.Map<string, any>;
+  library_selected?: immutable.Map<string, any>;
+  library_is_copying?: boolean; // for the copy button, to signal an ongoing copy process
   library_search?: string; // if given, restricts to library entries that match the search
 
   // Project Find
@@ -124,14 +126,24 @@ export interface ProjectStoreState {
   subdirectories?: boolean;
   case_sensitive?: boolean;
   hidden_files?: boolean;
-  info_visible?: boolean;
   git_grep: boolean;
+  info_visible?: boolean;
 
   // Project Settings
   get_public_path_id?: (path: string) => any;
   stripped_public_paths: any; //computed(immutable.List)
 
+  // Project Info
+  show_project_info_explanation?: boolean;
+
+  // Project Status
+  status?: immutable.Map<string, any>; // this is smc-project/project-status/types::ProjectStatus;
+
   other_settings: any;
+
+  // Modal -- if modal is set to a string, display that string as a yes/no question.
+  // if Yes, then run the on_modal_yes function (if given).
+  modal?: ModalInfo;
 }
 
 export class ProjectStore extends Store<ProjectStoreState> {
@@ -211,6 +223,7 @@ export class ProjectStore extends Store<ProjectStoreState> {
   }
 
   getInitialState = (): ProjectStoreState => {
+    const other_settings = redux.getStore("account")?.get("other_settings");
     return {
       // Shared
       current_path: "",
@@ -236,14 +249,10 @@ export class ProjectStore extends Store<ProjectStoreState> {
       page_number: 0,
       checked_files: immutable.Set(),
       show_library: false,
-      show_new: false,
       file_listing_scroll_top: undefined,
       active_file_sort: TypedMap({
         is_descending: false,
-        column_name:
-          redux
-            .getStore("account")
-            ?.getIn(["other_settings", "default_file_sort"]) ?? "time",
+        column_name: other_settings?.get("default_file_sort") ?? "time",
       }),
 
       // Project New
@@ -253,7 +262,11 @@ export class ProjectStore extends Store<ProjectStoreState> {
 
       // Project Find
       user_input: "",
-      git_grep: true,
+      git_grep: other_settings?.get("find_git_grep") ?? true,
+      subdirectories: other_settings?.get("find_subdirectories"),
+      case_sensitive: other_settings?.get("find_case_sensitive"),
+      hidden_files: other_settings?.get("find_hidden_files"),
+
       most_recent_path: "",
 
       // Project Settings
@@ -332,7 +345,7 @@ export class ProjectStore extends Store<ProjectStoreState> {
         }
 
         if (this.get("current_path") === ".snapshots") {
-          _compute_snapshot_display_names(listing);
+          compute_snapshot_display_names(listing);
         }
 
         const search = this.get("file_search");
@@ -437,40 +450,8 @@ export class ProjectStore extends Store<ProjectStoreState> {
         }
       },
     },
-
-    library_docs_sorted: {
-      dependencies: ["library", "library_search"] as const,
-      fn: () => {
-        let docs = this.get("library").getIn(["examples", "documents"]);
-        const metadata = this.get("library").getIn(["examples", "metadata"]);
-        if (this.get("library_search")) {
-          const search = misc.search_split(this.get("library_search"));
-          // Using JSON of the doc is pretty naive but it's fast enough
-          // and I don't want to spend much time on this!
-          docs = docs.filter((doc) =>
-            misc.search_match(JSON.stringify(doc.toJS()).toLowerCase(), search)
-          );
-        }
-
-        if (docs != null) {
-          // sort by a triplet: idea is to have the docs sorted by their category,
-          // where some categories have weights (e.g. "introduction" comes first, no matter what)
-          const sortfn = function (doc) {
-            return [
-              metadata.getIn(["categories", doc.get("category"), "weight"]) ||
-                0,
-              metadata
-                .getIn(["categories", doc.get("category"), "name"])
-                .toLowerCase(),
-              (doc.get("title") && doc.get("title").toLowerCase()) ||
-                doc.get("id"),
-            ];
-          };
-          return docs.sortBy(sortfn);
-        }
-      },
-    },
   };
+
   // Returns the cursor positions for the given project_id/path, if that
   // file is opened, and supports cursors and is either old (and ...) or
   // is in react and has store with a cursors key.
@@ -534,7 +515,7 @@ export class ProjectStore extends Store<ProjectStoreState> {
 
   private close_deleted_file(path: string): void {
     const cur = this.get("current_path");
-    if (path == cur || startswith(cur, path + "/")) {
+    if (path == cur || misc.startswith(cur, path + "/")) {
       // we are deleting the current directory, so let's cd to HOME.
       const actions = redux.getProjectActions(this.project_id);
       if (actions != null) {
@@ -543,7 +524,7 @@ export class ProjectStore extends Store<ProjectStoreState> {
     }
     const all_paths = deleted_file_variations(path);
     for (const file of this.get("open_files").keys()) {
-      if (all_paths.indexOf(file) != -1 || startswith(file, path + "/")) {
+      if (all_paths.indexOf(file) != -1 || misc.startswith(file, path + "/")) {
         if (!this.has_file_been_viewed(file)) {
           // Hasn't even been viewed yet; when user clicks on the tab
           // they get a dialog to undelete the file.
@@ -623,38 +604,22 @@ export class ProjectStore extends Store<ProjectStoreState> {
   }
 }
 
-function _match(words, s, is_dir) {
-  s = s.toLowerCase();
-  for (const t of words) {
-    if (t[t.length - 1] === "/") {
-      if (!is_dir) {
-        return false;
-      } else if (s.indexOf(t.slice(0, -1)) === -1) {
-        return false;
-      }
-    } else if (s.indexOf(t) === -1) {
-      return false;
-    }
-  }
-  return true;
-}
-
 function _matched_files(search, listing) {
   if (listing == null) {
     return [];
   }
-  const words = search.split(" ");
-  return (() => {
-    const result: string[] = [];
-    for (const x of listing) {
-      if (
-        _match(words, x.display_name != null ? x.display_name : x.name, x.isdir)
-      ) {
-        result.push(x);
-      }
+  const words = misc.search_split(search);
+  const v: string[] = [];
+  for (const x of listing) {
+    const name = (x.display_name ?? x.name ?? "").toLowerCase();
+    if (
+      misc.search_match(name, words) ||
+      (x.isdir && misc.search_match(name + "/", words))
+    ) {
+      v.push(x);
     }
-    return result;
-  })();
+  }
+  return v;
 }
 
 function _compute_file_masks(listing): void {
@@ -714,16 +679,12 @@ function _compute_file_masks(listing): void {
   }
 }
 
-function _compute_snapshot_display_names(listing) {
-  return (() => {
-    const result: number[] = [];
-    for (const item of listing) {
-      const tm = misc.parse_bup_timestamp(item.name);
-      item.display_name = `${tm}`;
-      result.push((item.mtime = (tm - 0) / 1000));
-    }
-    return result;
-  })();
+function compute_snapshot_display_names(listing): void {
+  for (const item of listing) {
+    const tm = misc.parse_bup_timestamp(item.name);
+    item.display_name = `${tm}`;
+    item.mtime = tm.valueOf() / 1000;
+  }
 }
 
 // Mutates data to include info on public paths.

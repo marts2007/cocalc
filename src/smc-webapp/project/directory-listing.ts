@@ -7,8 +7,8 @@ import { server_time } from "smc-util/misc";
 import { once, retry_until_success } from "smc-util/async-utils";
 import { webapp_client } from "../webapp-client";
 import { redux } from "../app-framework";
+import * as prom_client from "../prom-client";
 
-const prom_client = require("../prom-client");
 let prom_get_dir_listing_h;
 if (prom_client.enabled) {
   prom_get_dir_listing_h = prom_client.new_histogram(
@@ -49,7 +49,7 @@ export async function get_directory_listing(opts: ListingOpts): Promise<any> {
     if (prom_client.enabled) {
       prom_labels.state = state;
     }
-    if (state !== "running") {
+    if (state != null && state !== "running") {
       timeout = 0.5;
       time0 = server_time();
       redux.getActions("projects").start_project(opts.project_id);
@@ -107,7 +107,8 @@ export async function get_directory_listing(opts: ListingOpts): Promise<any> {
   } finally {
     if (prom_client.enabled && prom_dir_listing_start != null) {
       prom_labels.err = !!listing_err;
-      const tm = (server_time() - prom_dir_listing_start) / 1000;
+      const tm =
+        (server_time().valueOf() - prom_dir_listing_start.valueOf()) / 1000;
       if (!isNaN(tm)) {
         if (prom_get_dir_listing_h != null) {
           prom_get_dir_listing_h.observe(prom_labels, tm);
@@ -124,7 +125,7 @@ export async function get_directory_listing(opts: ListingOpts): Promise<any> {
       // successfully opened, started, and got directory listing
       redux.getProjectActions(opts.project_id).log({
         event: "start_project",
-        time: server_time() - time0,
+        time: server_time().valueOf() - time0.valueOf(),
       });
     }
 

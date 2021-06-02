@@ -29,24 +29,15 @@ export function set_debug(x: boolean): void {
 }
 
 import { delay } from "awaiting";
-
 import { global_cache_decref } from "./global-cache";
-
 import { EventEmitter } from "events";
 import { Map, fromJS, List } from "immutable";
-
 import { keys, throttle } from "underscore";
-
 import { callback2, cancel_scheduled, once } from "../../async-utils";
-
 import { wait } from "../../async-wait";
-
 import { query_function } from "./query-function";
-
-import { copy, is_array, is_object, len } from "../../misc2";
-
-const misc = require("../../misc");
-const schema = require("../../schema");
+import { assert_uuid, copy, is_array, is_object, len } from "../../misc";
+import * as schema from "../../schema";
 
 export type Query = any; // todo
 export type QueryOptions = any[]; // todo
@@ -362,7 +353,7 @@ export class SyncTable extends EventEmitter {
       }
     }
     if (DEBUG) {
-      //console.log(`set('${this.table}'): ${misc.to_json(changes.toJS())}`);
+      //console.log(`set('${this.table}'): ${JSON.stringify(changes.toJS())}`);
     }
 
     // For sanity!
@@ -492,7 +483,7 @@ export class SyncTable extends EventEmitter {
     }
   }
 
-  public async close(fatal: boolean = false): Promise<void> {
+  public close_no_async(): void {
     if (this.state === "closed") {
       // already closed
       return;
@@ -510,24 +501,31 @@ export class SyncTable extends EventEmitter {
     }
 
     this.client.removeListener("disconnected", this.disconnected);
-    if (!fatal) {
-      // do a last attempt at a save (so we don't lose data),
-      // then really close.
-      await this.save(); // attempt last save to database.
-    }
-    /*
-    The moment the sync part of _save is done, we remove listeners
-    and clear everything up.  It's critical that as soon as close
-    is called that there be no possible way any further connect
-    events (etc) can make this SyncTable
-    do anything!!  That finality assumption is made
-    elsewhere (e.g in smc-project/client.coffee)
-    */
-
     this.close_changefeed();
     this.set_state("closed");
     this.removeAllListeners();
     delete this.value;
+  }
+
+  public async close(fatal: boolean = false): Promise<void> {
+    if (this.state === "closed") {
+      // already closed
+      return;
+    }
+    if (!fatal) {
+      // do a last attempt at a save (so we don't lose data),
+      // then really close.
+      await this.save(); // attempt last save to database.
+      /*
+      The moment the sync part of _save is done, we remove listeners
+      and clear everything up.  It's critical that as soon as close
+      is called that there be no possible way any further connect
+      events (etc) can make this SyncTable
+      do anything!!  That finality assumption is made
+      elsewhere (e.g in smc-project/client.coffee)
+      */
+    }
+    this.close_no_async();
   }
 
   public async wait(until: Function, timeout: number = 30): Promise<any> {
@@ -624,18 +622,18 @@ export class SyncTable extends EventEmitter {
   }
 
   private dbg(_f?: string): Function {
-    return () => {};
-    /*
-    return (...args) => {
-      console.log(`synctable("${this.table}").${_f}: `, ...args);
-    };
+    if (!DEBUG) {
+      return () => {};
+    }
     if (this.client.is_project()) {
       return this.client.dbg(
         `SyncTable('${JSON.stringify(this.query)}').${_f}`
       );
+    } else {
+      return (...args) => {
+        console.log(`synctable("${this.table}").${_f}: `, ...args);
+      };
     }
-    return () => {};
-    */
   }
 
   private async connect(): Promise<void> {
@@ -1207,7 +1205,7 @@ export class SyncTable extends EventEmitter {
           return !!value;
         }
         if (desired === "uuid") {
-          misc.assert_uuid(value);
+          assert_uuid(value);
           return value;
         }
         return value;

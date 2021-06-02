@@ -5,7 +5,7 @@
 
 // IMPORTANT: If you change this file, also update this date, which appears in webapp-lib/policies/pricing.pug
 
-exports.CURRENT_DATE = "August 2019";
+exports.CURRENT_DATE = "September 2020";
 
 // Define upgrades to projects.
 //
@@ -33,6 +33,7 @@ exports.DEFAULT_QUOTAS = {
   always_running: 0,
 };
 
+// type must be Upgrades (in smc-util/upgrades/quota)
 upgrades.max_per_project = {
   disk_quota: 20000,
   memory: 16000,

@@ -11,7 +11,7 @@ using the given editor settings.
 import * as CodeMirror from "codemirror";
 import { file_associations } from "../../file-associations";
 import * as feature from "../../feature";
-import { path_split } from "smc-util/misc2";
+import { path_split } from "smc-util/misc";
 import { get_editor_settings } from "../generic/client";
 import { EDITOR_COLOR_SCHEMES } from "../../account/editor-settings/color-schemes";
 
@@ -92,6 +92,7 @@ export function cm_options(
     "Ctrl-/": "toggleComment", // shortcut chosen by jupyter project (undocumented)
 
     "Ctrl-Space": "autocomplete",
+    "Alt-Space": "autocomplete",
     Tab(cm) {
       tab_key(cm, opts.spaces_instead_of_tabs);
     },
@@ -103,6 +104,12 @@ export function cm_options(
     },
     "Shift-Ctrl-L"(cm) {
       cm.align_assignments();
+    },
+    "Alt-Q"(cm) {
+      cm.fill_paragraph();
+    },
+    "Cmd-Q"(cm) {
+      cm.fill_paragraph();
     },
   };
 
@@ -237,7 +244,7 @@ export function cm_options(
       const f = (key, cmd) =>
         (extraKeys[key] = (cm) => {
           cm.edit_selection({ cmd });
-          return editor_actions.set_syncstring_to_codemirror();
+          editor_actions.set_syncstring_to_codemirror();
         });
 
       for (const cmd in keybindings) {
@@ -328,7 +335,6 @@ export function cm_options(
 
   if (opts.code_folding) {
     extraKeys["Ctrl-Q"] = (cm) => cm.foldCodeSelectionAware();
-    extraKeys["Alt-Q"] = (cm) => cm.foldCodeSelectionAware();
     options.foldGutter = true;
     options.gutters = ["CodeMirror-linenumbers", "CodeMirror-foldgutter"];
   } else {
@@ -365,14 +371,14 @@ export function cm_options(
   return options;
 }
 
-var tab_key = function (editor, spaces_instead_of_tabs) {
+function tab_key(editor, spaces_instead_of_tabs?: boolean): void {
   if (editor.somethingSelected()) {
-    return (CodeMirror as any).commands.defaultTab(editor);
+    (CodeMirror as any).commands.defaultTab(editor);
   } else {
     if (spaces_instead_of_tabs) {
-      return editor.tab_as_space();
+      editor.tab_as_space();
     } else {
-      return (CodeMirror as any).commands.defaultTab(editor);
+      (CodeMirror as any).commands.defaultTab(editor);
     }
   }
-};
+}

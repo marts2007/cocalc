@@ -12,7 +12,7 @@
 
 import { Map as iMap } from "immutable";
 import { KNITR_EXTS } from "./frame-editors/latex-editor/constants";
-import { TypedMap } from "./app-framework/TypedMap";
+import { TypedMap } from "./app-framework";
 import { WebappClient } from "./webapp-client";
 
 export const LIBRARY_INDEX_FILE = "/ext/library/cocalc-examples/index.json";
@@ -46,9 +46,12 @@ export interface MainCapabilities {
   sage_version?: number[];
   x11: boolean;
   rmd: boolean;
+  jq: boolean;
   spellcheck: boolean;
   library: boolean;
   sshd: boolean;
+  html2pdf: boolean; // via chrome/chromium
+  pandoc: boolean; // e.g. for docx2md conversion
 }
 
 export interface Available {
@@ -59,38 +62,47 @@ export interface Available {
   latex: boolean;
   sage: boolean;
   rmd: boolean; // TODO besides R, what's necessary?
+  jq: boolean;
   spellcheck: boolean;
   library: boolean;
+  html2pdf: boolean;
+  pandoc: boolean;
   formatting: Capabilities | boolean;
 }
 
 export type AvailableFeatures = TypedMap<Available>;
 
-const NO_AVAIL: Readonly<Available> = Object.freeze({
+const NO_AVAIL: Readonly<Available> = {
   jupyter_lab: false,
   jupyter_notebook: false,
   jupyter: false,
   sage: false,
   latex: false,
   rmd: false,
+  jq: false,
   x11: false,
   spellcheck: false,
   library: false,
   formatting: false,
-});
+  html2pdf: false,
+  pandoc: false,
+} as const;
 
-export const ALL_AVAIL: Readonly<Available> = Object.freeze({
+export const ALL_AVAIL: Readonly<Available> = {
   jupyter_lab: true,
   jupyter_notebook: true,
   jupyter: true,
   sage: true,
   latex: true,
   rmd: true,
+  jq: true,
   x11: true,
   spellcheck: true,
   library: true,
   formatting: true,
-});
+  html2pdf: true,
+  pandoc: true,
+} as const;
 
 // detecting certain datastructures, only used for TS typing
 function isMainCapabilities(
@@ -121,7 +133,7 @@ export function isMainConfiguration(
 // if prettier exists, this adds all syntaxes to format via prettier
 function formatting_prettier(formatting: Capabilities): Capabilities {
   if (formatting.prettier) {
-    formatting.postcss = true;
+    formatting.css = true;
     formatting.babel = true;
     formatting.typescript = true;
     formatting.json = true;
@@ -182,9 +194,12 @@ export function is_available(configuration?: ProjectConfiguration): Available {
       sage: !!capabilities.sage,
       latex: !!capabilities.latex,
       rmd: !!capabilities.rmd,
+      jq: !!capabilities.jq,
       x11: !!capabilities.x11,
       spellcheck: !!capabilities.spellcheck,
       library: !!capabilities.library,
+      html2pdf: capabilities.html2pdf ?? true,
+      pandoc: capabilities.pandoc ?? true,
       formatting,
     };
   } else {

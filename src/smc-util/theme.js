@@ -13,7 +13,6 @@ specific to the company "SageMath, Inc." and the product "CoCalc".
 Upon deployment, please replace this file with a suitable replacement (i.e. come up with your own name, etc.)
 
 This is used mainly in the front-end, but some aspects are also used on the back-end
-Note: it is not possible to "require" assets, like the logos -- they're defined in webapp/misc_page.
 */
 
 exports.SITE_NAME = "CoCalc";
@@ -31,15 +30,17 @@ exports.HELP_EMAIL = "help@cocalc.com";
 exports.TWITTER_HANDLE = "cocalc_com"; // without the @
 exports.BILLING_EMAIL = "billing@sagemath.com";
 exports.BILLING_ADDRESS = `\
-1212 East Barclay Court
-Seattle, WA 98122, USA\
+17725 SE 123RD PL
+Renton, WA 98059-6621
+USA\
 `;
 exports.BILLING_TAXID = "TAX EIN: 47-3015407";
 exports.COPYRIGHT_AGENT_HTML = `\
 William Stein (Copyright Agent)<br>
 c/o SageMath, Inc.<br>
-1212 East Barclay Court<br>
-Seattle, WA 98122<br>
+17725 SE 123RD PL<br>
+Renton, WA 98059-6621<br>
+USA<br>
 <a href='mailto:copyright@sagemath.com'>copyright@sagemath.com</a>\
 `;
 // for conversion tracking (commercial only)
@@ -81,7 +82,9 @@ const COLORS = {
   GRAY_LL: "#eeeeee",
   GRAY_LLL: "#f5f5f5",
   // bootstrap 3 colors
+  BS_GREEN_BGRND: "rgb(92,184,92)",
   BS_BLUE_BGRND: "rgb(66, 139, 202)",
+  BS_BLUE_TEXT: "rgb(33, 150, 243)",
   BS_GREEN_LL: "#E8F5E9",
   BS_GREEN: "#5CB85C",
   BS_GREEN_D: "#449d44",
@@ -93,7 +96,15 @@ const COLORS = {
   FG_RED: "#c9302c", // red used for text
   FG_BLUE: "#428bca", // blue used for text
 
+  ATND_BG_RED_M: "#ff7875",
   ATND_BG_RED_L: "#fff2f0",
+  ANTD_RED_WARN: "#f5222d", // used in official docs if there is red text to warn
+  ANTD_YELL_M: "#fadb14",
+
+  ANTD_RED: "#f5222d", // hefty warning (needs white text on top of it)
+  ANTD_ORANGE: "#ffbb96", // mild warning
+  ANTD_GREEN: "#87d068", // bright lime-ish green
+  ANTD_GREEN_D: "#237804", // dark green
 };
 
 // The definitions below add semantic meaning by using the colors

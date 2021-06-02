@@ -17,7 +17,7 @@ import { FakeSyncstring } from "./syncstring-fake";
 import { Map } from "immutable";
 import { CompressedPatch } from "smc-util/sync/editor/generic/types";
 import { ExecOpts, ExecOutput } from "../../client/project";
-import { Config as FormatterConfig } from "smc-project/formatters/prettier";
+import { Config as FormatterConfig } from "smc-project/formatters";
 export { ExecOpts, ExecOutput };
 
 export function server_time(): Date {
@@ -49,22 +49,47 @@ export async function touch_project(project_id: string): Promise<void> {
   }
 }
 
+// return true, if this actually started the project
+// throwing a timeout means it attempted to start
 export async function start_project(
   project_id: string,
   timeout: number = 60
-): Promise<void> {
+): Promise<boolean> {
   const store = redux.getStore("projects");
   function is_running() {
     return store.get_state(project_id) === "running";
   }
   if (is_running()) {
     // already running, so done.
-    return;
+    return false;
   }
   // Start project running.
-  redux.getActions("projects").start_project(project_id);
+  const did_start = await redux
+    .getActions("projects")
+    .start_project(project_id);
   // Wait until running (or fails without timeout).
   await callback2(store.wait, { until: is_running, timeout });
+  return did_start;
+}
+
+// return true, if this actually stopped the project
+// throwing a timeout means it attempted to stop
+export async function stop_project(
+  project_id: string,
+  timeout: number = 60
+): Promise<boolean> {
+  const store = redux.getStore("projects");
+  function is_not_running() {
+    return store.get_state(project_id) !== "running";
+  }
+  if (is_not_running()) {
+    return false;
+  }
+  // Start project running.
+  const did_stop = await redux.getActions("projects").stop_project(project_id);
+  // Wait until running (or fails without timeout).
+  await callback2(store.wait, { until: is_not_running, timeout });
+  return did_stop;
 }
 
 interface ReadTextFileOpts {
@@ -96,13 +121,13 @@ export async function public_get_text_file(
   return await webapp_client.project_client.public_get_text_file(opts);
 }
 
-export async function prettier(
+export async function formatter(
   project_id: string,
   path: string,
   config: FormatterConfig
 ): Promise<CompressedPatch> {
   const api = await webapp_client.project_client.api(project_id);
-  const resp = await api.prettier(path, config);
+  const resp = await api.formatter(path, config);
 
   if (resp.status === "error") {
     const loc = resp.error.loc;
@@ -226,11 +251,11 @@ export function get_editor_settings(): Map<string, any> {
 
 export interface User {
   account_id: string;
-  created: string;
+  created?: Date;
   email_address?: string;
-  first_name: string;
-  last_active: string | null;
-  last_name: string;
+  first_name?: string;
+  last_active?: Date;
+  last_name?: string;
   banned?: boolean;
 }
 

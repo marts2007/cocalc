@@ -30,16 +30,10 @@ import "dropzone/css/dropzone.css";
 // Datetime picker plugin
 import "datetimepicker/bootstrap-datetimepicker.min.css";
 
-// Needed by DateTimePicker - http://jquense.github.io/react-widgets/docs/#/i18n
-import 'react-widgets/lib/less/react-widgets.less';
-
-// Needed by Octicon for displaying GitHub fonticons (see r_misc.cjsx)
-import 'octicons/octicons/octicons.css';
-
 // custom cocalc icon font
 import 'webapp-lib/cocalc-icons-font/style.css';
 
 // info at the bottom about the next step in startup sequence
 if (window.smcLoadStatus != null) {
-    window.smcLoadStatus("Loading CoCalc...");
+    window.smcLoadStatus("Loading ...");
 }

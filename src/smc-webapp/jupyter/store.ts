@@ -17,12 +17,27 @@ import { DEFAULT_COMPUTE_IMAGE } from "../../smc-util/compute-images";
 import { Kernels, Kernel } from "./util";
 import { KernelInfo, Cell, CellToolbarName } from "./types";
 import { Syntax } from "../../smc-util/code-formatter";
+import { ImmutableUsageInfo } from "../../smc-project/usage-info/types";
 
 // Used for copy/paste.  We make a single global clipboard, so that
 // copy/paste between different notebooks works.
 let global_clipboard: any = undefined;
 
 export type show_kernel_selector_reasons = "bad kernel" | "user request";
+
+export function canonical_language(
+  kernel?: string,
+  kernel_info_lang?: string
+): string | undefined {
+  let lang;
+  // special case: sage is language "python", but the snippet dialog needs "sage"
+  if (startswith(kernel, "sage")) {
+    lang = "sage";
+  } else {
+    lang = kernel_info_lang;
+  }
+  return lang;
+}
 
 export interface JupyterStoreState {
   nbconvert_dialog: any;
@@ -76,6 +91,9 @@ export interface JupyterStoreState {
   closestKernel?: Kernel;
   widget_model_ids: Set<string>;
   contents?: List<Map<string, any>>; // optional global contents info (about sections, problems, etc.)
+  connection_file?: string;
+  kernel_error?: string;
+  kernel_usage?: ImmutableUsageInfo;
 }
 
 export const initial_jupyter_store_state: {
@@ -275,12 +293,16 @@ export class JupyterStore extends Store<JupyterStoreState> {
       if (kernel != null) {
         kernel = kernel.toLowerCase();
         // The kernel is just a string that names the kernel, so we use heuristics.
-        if (kernel.indexOf("python") != -1 || kernel.indexOf("sage") != -1) {
+        if (kernel.indexOf("python") != -1) {
           if (kernel.indexOf("python3") != -1) {
             mode = { name: "python", version: 3 };
           } else {
             mode = { name: "python", version: 2 };
           }
+        } else if (kernel.indexOf("sage") != -1) {
+          mode = { name: "python", version: 3 };
+        } else if (kernel.indexOf("anaconda") != -1) {
+          mode = { name: "python", version: 3 };
         } else if (kernel.indexOf("octave") != -1) {
           mode = "octave";
         } else if (kernel.indexOf("bash") != -1) {
@@ -293,6 +315,13 @@ export class JupyterStore extends Store<JupyterStoreState> {
           mode = "javascript";
         } else if (kernel.indexOf("ir") != -1) {
           mode = "r";
+        } else if (
+          kernel.indexOf("root") != -1 ||
+          kernel.indexOf("xeus") != -1
+        ) {
+          mode = "text/x-c++src";
+        } else if (kernel.indexOf("gap") != -1) {
+          mode = "gap";
         } else {
           // C is probably a good fallback.
           mode = "text/x-c";
@@ -473,14 +502,10 @@ export class JupyterStore extends Store<JupyterStoreState> {
 
   // canonicalize the language of the kernel
   public get_kernel_language(): string | undefined {
-    let lang;
-    // special case: sage is language "python", but the snippet dialog needs "sage"
-    if (startswith(this.get("kernel"), "sage")) {
-      lang = "sage";
-    } else {
-      lang = this.getIn(["kernel_info", "language"]);
-    }
-    return lang;
+    return canonical_language(
+      this.get("kernel"),
+      this.getIn(["kernel_info", "language"])
+    );
   }
 
   // map the kernel language to the syntax of a language we know

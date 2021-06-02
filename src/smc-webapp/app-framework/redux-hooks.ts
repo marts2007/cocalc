@@ -33,12 +33,10 @@ Or with an editor in a project:
  useRedux(['path', 'in', 'project store'], 'project-id', 'path')
 */
 
-import { is_valid_uuid_string } from "../../smc-util/misc2";
-
+import { is_valid_uuid_string } from "../../smc-util/misc";
 import { redux, ProjectActions, ProjectStore } from "../app-framework";
 import { ProjectStoreState } from "../project_store";
 import * as React from "react";
-
 import * as types from "./actions-and-stores";
 
 export function useReduxNamedStore(path: string[]) {
@@ -196,6 +194,7 @@ export interface StoreStates {
   projects: types.ProjectsState;
   support: types.SupportState;
   users: types.UsersState;
+  "compute-environment": types.ComputeEnvironmentState;
 }
 
 export function useTypedRedux<
@@ -218,7 +217,10 @@ export function useTypedRedux(
   return useRedux(a.project_id, field);
 }
 
-export function useEditorRedux<State>(editor: { project_id; path }) {
+export function useEditorRedux<State>(editor: {
+  project_id: string;
+  path: string;
+}) {
   function f<S extends keyof State>(field: S): State[S] {
     return useReduxEditorStore(
       [field as string],
@@ -329,12 +331,21 @@ export function useActions(name: "page"): types.PageActions;
 export function useActions(name: "projects"): types.ProjectsActions;
 export function useActions(name: "support"): types.SupportActions;
 export function useActions(name: "users"): types.UsersActions;
+export function useActions(
+  name: "compute-environment"
+): types.ComputeEnvironmentActions;
 
-// If it is none of the explicitly named ones... it's a project or just some general actions
+// If it is none of the explicitly named ones... it's a project or just some general actions.
+// That said *always* use {project_id} as below to get the actions for a project, so you
+// get proper typing.
 export function useActions(x: string): any;
 
 export function useActions<T>({ name: string }): T;
-export function useActions({ project_id: string }): ProjectActions;
+
+// Return type includes undefined because the actions for a project *do* get
+// destroyed when closing a project, and rendering can still happen during this
+// time, so client code must account for this.
+export function useActions({ project_id: string }): ProjectActions | undefined;
 
 // Or an editor actions (any for now)
 export function useActions(x: string, path: string): any;
@@ -348,9 +359,11 @@ export function useActions(x, path?: string) {
       if (x?.name != null) {
         actions = redux.getActions(x.name);
       } else if (x?.project_id != null) {
-        actions = redux.getProjectActions(x.project_id);
+        // return here to avoid null check below; it can be null
+        return redux.getProjectActions(x.project_id);
       } else if (is_valid_uuid_string(x)) {
-        actions = redux.getProjectActions(x);
+        // return here to avoid null check below; it can be null
+        return redux.getProjectActions(x);
       } else {
         actions = redux.getActions(x);
       }
@@ -380,6 +393,7 @@ export interface Stores {
   projects: types.ProjectsStore;
   support: types.SupportStore;
   users: types.UsersStore;
+  "compute-environment": types.ComputeEnvironmentStore;
 }
 
 // If it is none of the explicitly named ones... it's a project.

@@ -1,5 +1,9 @@
-import { Row, Col } from "antd";
+/*
+ *  This file is part of CoCalc: Copyright © 2020 Sagemath, Inc.
+ *  License: AGPLv3 s.t. "Commons Clause" – see LICENSE.md for details
+ */
 
+import { Row, Col } from "antd";
 import {
   React,
   useMemo,
@@ -9,7 +13,8 @@ import {
 } from "../../app-framework";
 import { Loading, TimeAgo, WindowedList } from "../../r_misc";
 import { projects_with_licenses } from "./util";
-import { plural, trunc_middle } from "smc-util/misc2";
+import { plural, trunc_middle } from "smc-util/misc";
+import { LICENSES_STYLE } from "./managed-licenses";
 
 function open_project(project_id: string): void {
   redux.getActions("projects").open_project({ project_id });
@@ -20,7 +25,7 @@ export const ProjectsWithLicenses: React.FC = () => {
   const project_map = useTypedRedux("projects", "project_map");
   const all_projects_have_been_loaded = useTypedRedux(
     "projects",
-    "all_projects_have_been_loaded",
+    "all_projects_have_been_loaded"
   );
   const projects = useMemo(() => projects_with_licenses(project_map), [
     project_map,
@@ -42,8 +47,10 @@ export const ProjectsWithLicenses: React.FC = () => {
           open_project(project_id);
         }}
       >
-        <Col span={12}>
-          {trunc_middle(project_map.getIn([project_id, "title"]), 80)}
+        <Col span={12} style={{ paddingLeft: "15px" }}>
+          <a>
+            {trunc_middle(project_map?.getIn([project_id, "title"]) ?? "", 80)}
+          </a>
         </Col>
         <Col span={6}>
           {num_licenses} {plural(num_licenses, "License")}
@@ -54,8 +61,19 @@ export const ProjectsWithLicenses: React.FC = () => {
   }
 
   function render_projects_with_license() {
+    if (projects == null || projects.length == 0) {
+      return (
+        <span>
+          You do not have any licensed projects yet. Please purchase a license
+          or apply a license to one of your projects in Project Settings.
+        </span>
+      );
+    }
     return (
-      <div style={{ height: "50vh" }} className={"smc-vfill"}>
+      <div
+        style={{ ...LICENSES_STYLE, height: "50vh" }}
+        className={"smc-vfill"}
+      >
         <WindowedList
           row_count={projects.length}
           row_renderer={row_renderer}
@@ -69,10 +87,15 @@ export const ProjectsWithLicenses: React.FC = () => {
     );
   }
 
+  function render_count() {
+    if (projects == null || projects.length == 0) return;
+    return <>({projects.length})</>;
+  }
+
   return (
     <div>
       {" "}
-      <h3>Projects with licenses</h3>
+      <h3>Projects with licenses {render_count()}</h3>
       {render_projects_with_license()}
     </div>
   );

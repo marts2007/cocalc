@@ -24,6 +24,7 @@ import { SSHKeysPage } from "./ssh-keys/global-ssh-keys";
 import { Icon, Loading } from "../r_misc";
 import { SignOut } from "../account/sign-out";
 import { KUCALC_COCALC_COM } from "smc-util/db-schema/site-defaults";
+import { PublicPaths } from "./public-paths/public-paths";
 
 export const AccountPage: React.FC = () => {
   const active_page = useTypedRedux("account", "active_page");
@@ -54,6 +55,18 @@ export const AccountPage: React.FC = () => {
   const ssh_gateway = useTypedRedux("customize", "ssh_gateway");
   const is_commercial = useTypedRedux("customize", "is_commercial");
 
+  const exclusive_sso_domains = React.useMemo(() => {
+    if (strategies == null) return;
+    const domains = new Set<string>([]);
+    for (const strat of strategies) {
+      const doms = strat.get("exclusive_domains");
+      for (const dom of doms ?? []) {
+        domains.add(dom);
+      }
+    }
+    return domains;
+  }, [strategies]);
+
   function handle_select(key: string): void {
     switch (key) {
       case "billing":
@@ -73,6 +86,7 @@ export const AccountPage: React.FC = () => {
     return (
       <LandingPage
         strategies={strategies}
+        exclusive_sso_domains={exclusive_sso_domains}
         sign_up_error={sign_up_error}
         sign_in_error={sign_in_error}
         signing_in={signing_in}
@@ -101,8 +115,9 @@ export const AccountPage: React.FC = () => {
           </span>
         }
       >
-        {(active_page == null || active_page === "account") &&
-          <AccountPreferences />}
+        {(active_page == null || active_page === "account") && (
+          <AccountPreferences />
+        )}
       </Tab>
     );
   }
@@ -117,11 +132,24 @@ export const AccountPage: React.FC = () => {
     if (is_commercial) {
       v.push(
         <Tab
+          key="licenses"
+          eventKey="licenses"
+          title={
+            <span>
+              <Icon name="key" /> Licenses
+            </span>
+          }
+        >
+          {active_page === "licenses" && <LicensesPage />}
+        </Tab>
+      );
+      v.push(
+        <Tab
           key="billing"
           eventKey="billing"
           title={
             <span>
-              <Icon name="money" /> {"Subscriptions and Course Packages"}
+              <Icon name="money" /> {"Purchases"}
             </span>
           }
         >
@@ -139,20 +167,6 @@ export const AccountPage: React.FC = () => {
           }
         >
           {active_page === "upgrades" && <UpgradesPage />}
-        </Tab>
-      );
-      // Hide for dev purposes.
-      v.push(
-        <Tab
-          key="licenses"
-          eventKey="licenses"
-          title={
-            <span>
-              <Icon name="key" /> Licenses
-            </span>
-          }
-        >
-          {active_page === "licenses" && <LicensesPage />}
         </Tab>
       );
     }
@@ -186,6 +200,19 @@ export const AccountPage: React.FC = () => {
         </Tab>
       );
     }
+    v.push(
+      <Tab
+        key="public-files"
+        eventKey="public-files"
+        title={
+          <span>
+            <Icon name="bullhorn" /> Public files
+          </span>
+        }
+      >
+        {active_page === "public-files" && <PublicPaths />}
+      </Tab>
+    );
     return v;
   }
 
@@ -199,7 +226,9 @@ export const AccountPage: React.FC = () => {
     }
     if (is_anonymous) {
       return (
-        <div style={{ margin: "15px 10%" }}><AccountPreferences /></div>
+        <div style={{ margin: "15px 10%" }}>
+          <AccountPreferences />
+        </div>
       );
     }
     const tabs: JSX.Element[] = [render_account_tab()].concat(

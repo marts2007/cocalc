@@ -16,8 +16,7 @@ import {
 } from "smc-util/sync/editor/generic/ipywidgets-state";
 import { once } from "smc-util/async-utils";
 import { Comm } from "./comm";
-import { copy, is_array, len, uuid } from "smc-util/misc2";
-
+import { copy, is_array, len, uuid } from "smc-util/misc";
 import * as react_output from "./output";
 import * as react_controls from "./controls";
 
@@ -180,7 +179,7 @@ export class WidgetManager extends base.ManagerBase<HTMLElement> {
   }
 
   deserialize_state(model: base.DOMWidgetModel, state: ModelState): ModelState {
-    // NOTE: this is a reimplementation of soemthing in
+    // NOTE: this is a reimplementation of soemething in
     //     ipywidgets/packages/base/src/widget.ts
     // but we untagle unpacking and deserializing, which is
     // mixed up there.

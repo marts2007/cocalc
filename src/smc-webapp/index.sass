@@ -30,7 +30,9 @@
   // top: -2px
 
 @import help
-@import misc_page
+@import codemirror_plugins
+@import bootstrap
+@import idle
 @import console
 @import activity
 @import projects_nav
@@ -166,6 +168,13 @@ div#cocalc-react-crash > div > pre
 
 .CodeMirror, .CodeMirror-wrap
   line-height : normal
+
+/* This somewhat mostly fixes https://github.com/sagemathinc/cocalc/issues/4663
+   It's not 100% since some non-default themes also change the colors.
+   However #999 is at least *readable* usually. */
+.CodeMirror-linenumber::selection
+  color : #999
+
 
 /* see http://stackoverflow.com/questions/271067/how-can-i-make-a-textarea-100-width-without-overflowing-when-padding-is-present  */
 
@@ -403,3 +412,10 @@ div.cocalc-xtermjs > div.terminal.xterm > div.xterm-viewport
   padding-right: 1px;
 
 @import antd_fix
+
+// Fix issue https://github.com/sagemathinc/cocalc/issues/4568
+blockquote
+  font-size: inherit;
+blockquote p
+  font-size: inherit;
+

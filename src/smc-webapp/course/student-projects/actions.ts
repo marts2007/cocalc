@@ -17,6 +17,9 @@ import { SITE_NAME } from "smc-util/theme";
 import { markdown_to_html } from "../../markdown";
 import { UpgradeGoal } from "../types";
 import { run_in_all_projects, Result } from "./run-in-all-projects";
+import { DEFAULT_COMPUTE_IMAGE } from "smc-util/compute-images";
+import { site_license_public_info } from "../../site-licenses/util";
+import { Datastore } from "../../projects/actions";
 
 export class StudentProjectsActions {
   private course_actions: CourseActions;
@@ -63,7 +66,8 @@ export class StudentProjectsActions {
       project_id = await redux.getActions("projects").create_project({
         title: store.get("settings").get("title"),
         description: store.get("settings").get("description"),
-        image: store.get("settings").get("custom_image"),
+        image:
+          store.get("settings").get("custom_image") ?? DEFAULT_COMPUTE_IMAGE,
       });
     } catch (err) {
       this.course_actions.set_error(
@@ -102,10 +106,7 @@ export class StudentProjectsActions {
     const student = s.get_student(student_id);
     if (student == null) return; // no such student..
 
-    let site_name = redux.getStore("customize").get("site_name");
-    if (!site_name) {
-      site_name = SITE_NAME;
-    }
+    const site_name = redux.getStore("customize").get("site_name") ?? SITE_NAME;
     let body = s.get_email_invite();
 
     // Define function to invite or add collaborator
@@ -176,19 +177,6 @@ export class StudentProjectsActions {
       }
     }
 
-    // Set license key if known; remove if not.
-    const site_license_id = s.getIn(["settings", "site_license_id"]);
-    const actions = redux.getActions("projects");
-    if (site_license_id) {
-      await actions.add_site_license_to_project(
-        student_project_id,
-        site_license_id
-      );
-    } else {
-      // ensure no license set
-      await actions.remove_site_license_from_project(student_project_id);
-    }
-
     // Regarding student_account_id !== undefined below, see https://github.com/sagemathinc/cocalc/pull/3259
     // The problem is that student_account_id might not yet be known to the .course, even though
     // the student has been added and the account_id exists, and is known to the account opening
@@ -214,6 +202,48 @@ export class StudentProjectsActions {
     }
   }
 
+  private async configure_project_license(
+    student_project_id: string,
+    license_id?: string
+  ): Promise<void> {
+    const actions = redux.getActions("projects");
+    if (license_id != null) {
+      await actions.set_site_license(student_project_id, license_id);
+      return;
+    }
+    const store = this.get_store();
+    if (store == null) return;
+    // Set license key if known
+    const site_license_id = store.getIn(["settings", "site_license_id"]);
+    if (site_license_id) {
+      await actions.set_site_license(student_project_id, site_license_id);
+    }
+  }
+
+  private async remove_project_license(
+    student_project_id: string
+  ): Promise<void> {
+    const actions = redux.getActions("projects");
+    await actions.set_site_license(student_project_id, "");
+  }
+
+  public async remove_all_project_licenses(): Promise<void> {
+    const id = this.course_actions.set_activity({
+      desc: "Removing all student project licenses...",
+    });
+    try {
+      const store = this.get_store();
+      if (store == null) return;
+      for (const student of store.get_students().valueSeq().toArray()) {
+        const student_project_id = student.get("project_id");
+        if (student_project_id == null) continue;
+        await this.remove_project_license(student_project_id);
+      }
+    } finally {
+      this.course_actions.set_activity({ id });
+    }
+  }
+
   private async configure_project_visibility(
     student_project_id: string
   ): Promise<void> {
@@ -226,9 +256,7 @@ export class StudentProjectsActions {
     }
     // Make project not visible to any collaborator on the course project.
     const store = this.get_store();
-    if (store == undefined) {
-      return;
-    }
+    if (store == null) return;
     const users = redux
       .getStore("projects")
       .get_users(store.get("course_project_id"));
@@ -382,6 +410,12 @@ export class StudentProjectsActions {
       // pay *must* be a Date, not just a string timestamp... or "" for not paying.
       pay = new Date(pay);
     }
+
+    const datastore: Datastore = store.get_datastore();
+    const student_project_functionality = store
+      .getIn(["settings", "student_project_functionality"])
+      ?.toJS();
+
     const actions = redux.getActions("projects");
     const id = this.course_actions.set_activity({
       desc: "Updating project course info...",
@@ -400,7 +434,10 @@ export class StudentProjectsActions {
           store.get("course_filename"),
           pay,
           student_account_id,
-          student_email_address
+          student_email_address,
+          datastore,
+          "student", // type of project
+          student_project_functionality
         );
       }
     } finally {
@@ -412,7 +449,8 @@ export class StudentProjectsActions {
     student_id,
     do_not_invite_student_by_email,
     student_project_id?: string,
-    force_send_invite_by_email?: boolean
+    force_send_invite_by_email?: boolean,
+    license_id?: string // relevant for serial license strategy only
   ): Promise<void> {
     // student_project_id is optional. Will be used instead of from student_id store if provided.
     // Configure project for the given student so that it has the right title,
@@ -429,16 +467,31 @@ export class StudentProjectsActions {
     if (student_project_id == null) {
       await this.create_student_project(student_id);
     } else {
-      await this.configure_project_users(
-        student_project_id,
-        student_id,
-        do_not_invite_student_by_email,
-        force_send_invite_by_email
-      );
-      await this.configure_project_visibility(student_project_id);
-      await this.configure_project_title(student_project_id, student_id);
-      await this.configure_project_description(student_project_id);
+      await Promise.all([
+        this.configure_project_users(
+          student_project_id,
+          student_id,
+          do_not_invite_student_by_email,
+          force_send_invite_by_email
+        ),
+        this.configure_project_visibility(student_project_id),
+        this.configure_project_title(student_project_id, student_id),
+        this.configure_project_description(student_project_id),
+        this.configure_project_compute_image(student_project_id),
+        this.configure_project_license(student_project_id, license_id),
+      ]);
     }
+  }
+
+  private async configure_project_compute_image(
+    student_project_id: string
+  ): Promise<void> {
+    const store = this.get_store();
+    if (store == null) return;
+    const img_id =
+      store.get("settings").get("custom_image") ?? DEFAULT_COMPUTE_IMAGE;
+    const actions = redux.getProjectActions(student_project_id);
+    await actions.set_compute_image(img_id);
   }
 
   private async delete_student_project(student_id: string): Promise<void> {
@@ -477,6 +530,36 @@ export class StudentProjectsActions {
       // currently running already.
       return;
     }
+
+    let license_run_limits:
+      | { [license_id: string]: number }
+      | undefined = undefined;
+    const site_license_id = store.getIn(["settings", "site_license_id"]);
+    if (site_license_id) {
+      const licenses = site_license_id.split(",");
+      if (
+        store.getIn(["settings", "site_license_strategy"], "serial") ==
+          "serial" &&
+        licenses.length > 1
+      ) {
+        const has_shared_project = !!store.getIn([
+          "settings",
+          "shared_project_id",
+        ]);
+        license_run_limits = {};
+        // get the run limit for each license, but subtract for course project
+        // and shared project.
+        for (const license_id of licenses) {
+          let { run_limit } = await site_license_public_info(license_id, force);
+          if (!run_limit) {
+            run_limit = 999999999999999; // effectively unlimited
+          }
+          license_run_limits[license_id] =
+            run_limit - 1 - (has_shared_project ? 1 : 0);
+        }
+      }
+    }
+
     let id: number = -1;
     try {
       this.course_actions.setState({ configuring_projects: true });
@@ -488,13 +571,91 @@ export class StudentProjectsActions {
         return;
       }
       let i = 0;
+
+      // Ensure all projects are loaded, rather than just the most recent
+      // n projects -- important since courses often have more than n students!
+      await redux.getActions("projects").load_all_projects();
+      let project_map = redux.getStore("projects").get("project_map");
+      if (project_map == null || webapp_client.account_id == null) {
+        throw Error(
+          "BUG -- project_map must be initialized and you must be signed in; try again later."
+        );
+      }
+
+      // Make sure we're a collaborator on every student project.
+      let changed = false;
+      for (const student_id of ids) {
+        if (this.course_actions.is_closed()) return;
+        const project_id = store.getIn(["students", student_id, "project_id"]);
+        if (project_id && !project_map.get(project_id)) {
+          await webapp_client.project_collaborators.add_collaborator({
+            account_id: webapp_client.account_id,
+            project_id,
+          });
+          changed = true;
+        }
+      }
+      if (changed) {
+        // wait hopefully long enough for info about licenses to be
+        // available in the project_map.  This is not 100% bullet proof,
+        // but that is FINE because we only really depend on this to
+        // slightly reduce doing extra work that is unlikely to be a problem.
+        await delay(3000);
+        project_map = redux.getStore("projects").get("project_map");
+      }
+
       for (const student_id of ids) {
         if (this.course_actions.is_closed()) return;
         i += 1;
         const id1: number = this.course_actions.set_activity({
           desc: `Configuring student project ${i} of ${ids.length}`,
         });
-        await this.configure_project(student_id, false, undefined, force);
+        let license_id: string | undefined = undefined;
+        if (license_run_limits != null) {
+          // licenses being allocated globally.
+          // What is there now for this project?
+          const student_project_id = store.getIn([
+            "students",
+            student_id,
+            "project_id",
+          ]);
+          const site_license = project_map?.getIn([
+            student_project_id,
+            "site_license",
+          ]);
+          let already_done: boolean = false;
+          if (store.get_student(student_id)?.get("deleted")) {
+            // remove license if student is deleted
+            license_id = "";
+            already_done = true;
+          }
+          for (const id in site_license) {
+            if (license_run_limits[id] != null) {
+              license_run_limits[id] -= 1;
+              if (license_run_limits[id] >= 0) {
+                already_done = true;
+              }
+            }
+          }
+          if (!already_done) {
+            license_id = ""; // if don't get one below, will remove all licenses from project
+            // choose an available license
+            for (const id in license_run_limits) {
+              if (license_run_limits[id] > 0) {
+                license_id = id;
+                license_run_limits[id] -= 1;
+                break;
+              }
+            }
+          }
+        }
+        await this.configure_project(
+          student_id,
+          false,
+          undefined,
+          force,
+          license_id
+        );
         this.course_actions.set_activity({ id: id1 });
         await delay(0); // give UI, etc. a solid chance to render
       } // always re-invite students on running this.

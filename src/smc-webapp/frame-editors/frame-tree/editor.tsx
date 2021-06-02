@@ -5,23 +5,21 @@
 
 import {
   React,
+  CSS,
   rclass,
   rtypes,
   Component,
   Rendered,
   project_redux_name,
 } from "../../app-framework";
-
 import { ErrorDisplay, Loading, LoadingEstimate } from "smc-webapp/r_misc";
 import { FormatBar } from "./format-bar";
 import { StatusBar } from "./status-bar";
+//TODO: import { FrameTree } from "./frame-tree";
 const { FrameTree } = require("./frame-tree");
 import { EditorSpec, ErrorStyles } from "./types";
-
-import { is_different, filename_extension } from "smc-util/misc2";
-
+import { is_different, filename_extension } from "smc-util/misc";
 import { SetMap } from "./types";
-
 import { AvailableFeatures } from "../../project_configuration";
 
 interface FrameTreeEditorReactProps {
@@ -32,6 +30,7 @@ interface FrameTreeEditorReactProps {
   format_bar: boolean;
   format_bar_exclude?: SetMap;
   editor_spec: any;
+  tab_is_visible: boolean; // if the editor tab is active -- page/page.tsx
 }
 
 interface FrameTreeEditorReduxProps {
@@ -58,6 +57,7 @@ interface FrameTreeEditorReduxProps {
   complete: Map<string, any>;
   derived_file_types: Set<string>;
   available_features: AvailableFeatures;
+  visible?: boolean;
 }
 
 type FrameTreeEditorProps = FrameTreeEditorReactProps &
@@ -111,6 +111,8 @@ const FrameTreeEditor0 = class extends Component<FrameTreeEditorProps, {}> {
         complete: rtypes.immutable.Map.isRequired,
 
         derived_file_types: rtypes.immutable.Set,
+
+        visible: rtypes.bool,
       },
       [project_store_name]: {
         available_features: rtypes.immutable.Map,
@@ -152,6 +154,8 @@ const FrameTreeEditor0 = class extends Component<FrameTreeEditorProps, {}> {
         "complete",
         "derived_file_types",
         "available_features",
+        "visible",
+        "tab_is_visible",
       ]) ||
       this.props.editor_settings.get("extra_button_bar") !==
         next.editor_settings.get("extra_button_bar")
@@ -211,6 +215,9 @@ const FrameTreeEditor0 = class extends Component<FrameTreeEditorProps, {}> {
           complete={this.props.complete}
           derived_file_types={this.props.derived_file_types}
           available_features={this.props.available_features}
+          local_view_state={this.props.local_view_state}
+          is_visible={this.props.visible ?? true}
+          tab_is_visible={this.props.tab_is_visible}
         />
       </div>
     );
@@ -220,19 +227,14 @@ const FrameTreeEditor0 = class extends Component<FrameTreeEditorProps, {}> {
     if (!this.props.error) {
       return;
     }
-    const style: any = {
-      maxWidth: "100%",
-      margin: "1ex",
-      maxHeight: "30%",
-      overflowY: "scroll",
-    };
+    const style: CSS = {};
     if (this.props.errorstyle === "monospace") {
       style.fontFamily = "monospace";
-      style.fontSize = "85%";
       style.whiteSpace = "pre-wrap";
     }
     return (
       <ErrorDisplay
+        banner={true}
         error={this.props.error}
         onClose={() => this.props.actions.set_error("")}
         style={style}
@@ -294,6 +296,7 @@ interface EditorProps {
   name: string;
   path: string;
   project_id: string;
+  is_visible: boolean;
 }
 
 export function createEditor(opts: Options) {
@@ -310,6 +313,7 @@ export function createEditor(opts: Options) {
           format_bar={opts.format_bar}
           format_bar_exclude={opts.format_bar_exclude}
           editor_spec={opts.editor_spec}
+          tab_is_visible={this.props.is_visible}
         />
       );
     }

@@ -5,7 +5,7 @@
 
 import { PostgreSQL } from "../types";
 import { query } from "../query";
-import { number_of_running_projects_using_license } from "./analytics";
+import { number_of_running_projects_using_license, number_of_projects_with_license_applied } from "./analytics";
 
 export async function site_license_public_info(
   db: PostgreSQL,
@@ -16,9 +16,11 @@ export async function site_license_public_info(
     db,
     select: [
       "title",
+      "description",
       "expires",
       "activates",
       "upgrades",
+      "quota",
       "run_limit",
       "managers",
     ],
@@ -30,6 +32,8 @@ export async function site_license_public_info(
 
   // Get number of runnings projects with this license applied.
   obj.running = await number_of_running_projects_using_license(db, license_id);
+  // Get number of projects with this license applied (may not be running or actually using license).
+  obj.applied = await number_of_projects_with_license_applied(db, license_id);
 
   return obj;
 }

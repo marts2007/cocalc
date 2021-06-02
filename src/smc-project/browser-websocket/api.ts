@@ -33,6 +33,8 @@ import { get_configuration } from "../configuration";
 import { delete_files } from "./delete-files";
 import { rename_file, move_files } from "./move-files";
 import { realpath } from "./realpath";
+import { project_info_ws } from "../project-info";
+import { Mesg } from "../../smc-webapp/project/websocket/types";
 
 export function init_websocket_api(
   primus: any,
@@ -75,11 +77,11 @@ export function init_websocket_api(
   });
 }
 
-import { run_prettier, run_prettier_string } from "../formatters/prettier";
+import { run_formatter, run_formatter_string } from "../formatters";
 
 async function handle_api_call(
   client: any,
-  data: any,
+  data: Mesg,
   primus: any,
   logger: any
 ): Promise<any> {
@@ -96,10 +98,12 @@ async function handle_api_call(
       return canonical_paths(data.paths);
     case "configuration":
       return await get_configuration(data.aspect, data.no_cache);
-    case "prettier":
-      return await run_prettier(client, data.path, data.options, logger);
-    case "prettier_string":
-      return await run_prettier_string(
+    case "prettier": // deprecated
+    case "formatter":
+      return await run_formatter(client, data.path, data.options, logger);
+    case "prettier_string": // deprecated
+    case "formatter_string":
+      return await run_formatter_string(
         data.path,
         data.str,
         data.options,
@@ -139,9 +143,13 @@ async function handle_api_call(
       return await browser_symmetric_channel(client, primus, logger, data.name);
     case "realpath":
       return realpath(data.path);
+    case "project_info":
+      return await project_info_ws(primus, logger);
     default:
       throw Error(
-        `command "${data.cmd}" not implemented -- restart your project (in Project --> Settings)`
+        `command "${
+          (data as any).cmd
+        }" not implemented -- restart your project (in Project --> Settings)`
       );
   }
 }

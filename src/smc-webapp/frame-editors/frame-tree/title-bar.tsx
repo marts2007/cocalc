@@ -11,44 +11,45 @@ import { List } from "immutable";
 import {
   React,
   Rendered,
-  redux,
   useEffect,
   useForceUpdate,
   useRedux,
   useRef,
   useState,
+  CSS,
 } from "../../app-framework";
 import { is_safari } from "../generic/browser";
-import * as CSS from "csstype";
-
+import { Popconfirm } from "antd";
 import { SaveButton } from "./save-button";
 
 const { debounce } = require("underscore");
-const { ButtonGroup, Button } = require("react-bootstrap");
+import {
+  ButtonGroup,
+  Button as AntdButton,
+  ButtonStyle,
+} from "../../antd-bootstrap";
 
 import { get_default_font_size } from "../generic/client";
+
+import { IS_MACOS } from "../../feature";
 
 import {
   r_join,
   Icon,
   VisibleMDLG,
-  EditorFileInfoDropdown,
   Space,
   DropdownMenu,
   MenuItem,
 } from "smc-webapp/r_misc";
 
-const { IS_TOUCH } = require("smc-webapp/feature");
-
-import { capitalize, copy } from "smc-util/misc";
-
+import { IS_TOUCH } from "../../feature";
+import { capitalize, copy, path_split, trunc_middle } from "smc-util/misc";
 import { FORMAT_SOURCE_ICON } from "../frame-tree/config";
-
-import { path_split, trunc_middle } from "smc-util/misc2";
-
 import { ConnectionStatus, EditorSpec, EditorDescription } from "./types";
-
 import { Actions } from "../code-editor/actions";
+import { EditorFileInfoDropdown } from "../../editors/file-info-dropdown";
+import { useStudentProjectFunctionality } from "smc-webapp/course";
+import { RmdActions } from "../rmd-editor/actions";
 
 // Certain special frame editors (e.g., for latex) have extra
 // actions that are not defined in the base code editor actions.
@@ -77,7 +78,7 @@ const COL_BAR_BACKGROUND = "#f8f8f8";
 const COL_BAR_BACKGROUND_DARK = "#ddd";
 const COL_BAR_BORDER = "rgb(204,204,204)";
 
-const title_bar_style: CSS.Properties = {
+const title_bar_style: CSS = {
   background: COL_BAR_BACKGROUND_DARK,
   border: `1px solid ${COL_BAR_BORDER}`,
   padding: "1px",
@@ -88,7 +89,7 @@ const title_bar_style: CSS.Properties = {
   minHeight: "34px",
 };
 
-const TITLE_STYLE: CSS.Properties = {
+const TITLE_STYLE: CSS = {
   background: COL_BAR_BACKGROUND_DARK,
   padding: "5px 5px 0 5px",
   color: "#333",
@@ -98,7 +99,7 @@ const TITLE_STYLE: CSS.Properties = {
   display: "inline-block",
 };
 
-const CONNECTION_STATUS_STYLE: CSS.Properties = {
+const CONNECTION_STATUS_STYLE: CSS = {
   padding: "5px 5px 0 5px",
   fontSize: "10pt",
   float: "right",
@@ -117,12 +118,12 @@ function connection_status_color(status: ConnectionStatus): string {
   }
 }
 
-const ICON_STYLE: CSS.Properties = {
+const ICON_STYLE: CSS = {
   width: "20px",
   display: "inline-block",
 };
 
-const close_style: CSS.Properties | undefined = IS_TOUCH
+const close_style: CSS | undefined = IS_TOUCH
   ? undefined
   : {
       background: "transparent",
@@ -150,7 +151,7 @@ interface Props {
   available_features?: AvailableFeatures;
 }
 
-export const FrameTitleBar: React.FC<Props> = (props) => {
+export const FrameTitleBar: React.FC<Props> = (props: Props) => {
   const buttons_ref = useRef<
     { [button_name: string]: true } | null | undefined
   >(null);
@@ -167,6 +168,10 @@ export const FrameTitleBar: React.FC<Props> = (props) => {
   const [close_and_halt_confirm, set_close_and_halt_confirm] = useState<
     boolean
   >(false);
+
+  const student_project_functionality = useStudentProjectFunctionality(
+    props.project_id
+  );
 
   if (props.editor_actions?.name == null) {
     throw Error("editor_actions must have name attribute");
@@ -196,6 +201,7 @@ export const FrameTitleBar: React.FC<Props> = (props) => {
   ]);
   const is_saving: boolean = useRedux([props.editor_actions.name, "is_saving"]);
   const is_public: boolean = useRedux([props.editor_actions.name, "is_public"]);
+  const is_rmd = props.actions instanceof RmdActions;
 
   // comes from actions's store:
   const switch_to_files: List<string> = useRedux([
@@ -234,6 +240,21 @@ export const FrameTitleBar: React.FC<Props> = (props) => {
     return props.is_only || props.is_full ? "34px" : "30px";
   }
 
+  function button_style(style?: CSS): CSS {
+    return {
+      ...style,
+      ...{ height: button_height(), marginBottom: "5px" },
+    };
+  }
+
+  function Button(props) {
+    return (
+      <AntdButton {...props} style={button_style(props.style)}>
+        {props.children}
+      </AntdButton>
+    );
+  }
+
   function is_visible(action_name: string, explicit?: boolean): boolean {
     if (props.editor_actions[action_name] == null) {
       return false;
@@ -256,7 +277,7 @@ export const FrameTitleBar: React.FC<Props> = (props) => {
     props.actions.close_frame(props.id);
   }
 
-  function button_size(): string | undefined {
+  function button_size(): "small" | undefined {
     if (props.is_only || props.is_full) {
       return;
     } else {
@@ -337,10 +358,11 @@ export const FrameTitleBar: React.FC<Props> = (props) => {
 
   function render_control(): Rendered {
     const is_active = props.active_id === props.id;
-    const style: CSS.Properties = {
+    const style: CSS = {
       padding: 0,
       paddingLeft: "4px",
       background: is_active ? COL_BAR_BACKGROUND : COL_BAR_BACKGROUND_DARK,
+      height: button_height(),
     };
     if (is_active) {
       style.position = "absolute";
@@ -522,7 +544,7 @@ export const FrameTitleBar: React.FC<Props> = (props) => {
     return (
       <Button
         key={"sync"}
-        title={"Synchronize views (alt+enter)"}
+        title={`Synchronize views (${IS_MACOS ? "⌘" : "Alt"} + Enter)`}
         bsSize={button_size()}
         onClick={() => props.actions.sync?.(props.id, props.editor_actions)}
       >
@@ -547,9 +569,6 @@ export const FrameTitleBar: React.FC<Props> = (props) => {
         key={"switch-to-file"}
         button={true}
         style={{
-          top: props.is_full
-            ? "-7.5px"
-            : "-6.5px" /* this is obviously lazy crappy code */,
           height: button_height(),
         }}
         title={path_split(props.path).tail}
@@ -568,7 +587,11 @@ export const FrameTitleBar: React.FC<Props> = (props) => {
   }
 
   function render_download(): Rendered {
-    if (!is_visible("download") || props.editor_actions.download == null) {
+    if (
+      !is_visible("download") ||
+      props.editor_actions.download == null ||
+      student_project_functionality.disableActions
+    ) {
       return;
     }
     const labels = show_labels();
@@ -925,6 +948,35 @@ export const FrameTitleBar: React.FC<Props> = (props) => {
     );
   }
 
+  function render_guide(labels: boolean): Rendered {
+    if (!is_visible("guide", true) || is_public) {
+      return;
+    }
+    const { title, descr, icon } = {
+      ...{
+        title: "Guide",
+        descr: "Show guidebook",
+        icon: "book",
+      },
+      ...props.editor_spec[props.type].guide_info,
+    };
+    return (
+      <Button
+        key={"guide"}
+        title={descr}
+        bsSize={button_size()}
+        onClick={() =>
+          typeof props.actions.help === "function"
+            ? props.actions.guide(props.id, props.type)
+            : undefined
+        }
+      >
+        <Icon name={icon} />{" "}
+        <VisibleMDLG>{labels ? title : undefined}</VisibleMDLG>
+      </Button>
+    );
+  }
+
   function render_restart(): Rendered {
     if (!is_visible("restart", true)) {
       return;
@@ -961,6 +1013,7 @@ export const FrameTitleBar: React.FC<Props> = (props) => {
         is_saving={is_saving}
         no_labels={!labels}
         size={button_size()}
+        style={button_style()}
         onClick={() => {
           props.editor_actions.save(true);
           props.actions.explicit_save();
@@ -1026,13 +1079,16 @@ export const FrameTitleBar: React.FC<Props> = (props) => {
     if (!is_visible("build", true)) {
       return;
     }
+    const title = is_rmd
+      ? "Build (disable automatic builds in Account → Editor → 'Build on save')"
+      : "Build project";
     return (
       <Button
         key={"build"}
         disabled={!!props.status}
         bsSize={button_size()}
         onClick={() => props.actions.build?.(props.id, false)}
-        title={"Build project"}
+        title={title}
       >
         <Icon name={"play-circle"} /> <VisibleMDLG>Build</VisibleMDLG>
       </Button>
@@ -1109,7 +1165,7 @@ export const FrameTitleBar: React.FC<Props> = (props) => {
     if (!is_visible("pause")) {
       return;
     }
-    let icon: string, title: string, style: string | undefined;
+    let icon: string, title: string, style: ButtonStyle | undefined;
     if (props.is_paused) {
       icon = "play";
       title = "Play";
@@ -1154,6 +1210,33 @@ export const FrameTitleBar: React.FC<Props> = (props) => {
     );
   }
 
+  function render_clear(): Rendered {
+    if (!is_visible("clear")) {
+      return;
+    }
+    const info = props.editor_spec[props.type].clear_info ?? {
+      text: "Clear this frame?",
+      confirm: "Yes",
+    };
+    const title = <div style={{ maxWidth: "250px" }}>{info.text}</div>;
+    const icon = <Icon unicode={0x2620} />;
+    return (
+      <Popconfirm
+        key={"clear"}
+        placement={"bottom"}
+        title={title}
+        icon={icon}
+        onConfirm={() => props.actions.clear?.(props.id)}
+        okText={info.confirm}
+        cancelText={"Cancel"}
+      >
+        <Button bsSize={button_size()} title={"Clear"}>
+          {icon}{" "}
+        </Button>
+      </Popconfirm>
+    );
+  }
+
   function render_close_and_halt(labels: boolean): Rendered {
     if (!is_visible("close_and_halt")) {
       return;
@@ -1173,7 +1256,7 @@ export const FrameTitleBar: React.FC<Props> = (props) => {
   }
 
   function render_print(): Rendered {
-    if (!is_visible("print")) {
+    if (!is_visible("print") || student_project_functionality.disableActions) {
       return;
     }
     return (
@@ -1190,7 +1273,11 @@ export const FrameTitleBar: React.FC<Props> = (props) => {
   }
 
   function render_shell(): Rendered {
-    if (!is_visible("shell")) {
+    if (
+      !is_visible("shell") ||
+      is_public ||
+      student_project_functionality.disableTerminals
+    ) {
       return;
     }
     return (
@@ -1206,21 +1293,51 @@ export const FrameTitleBar: React.FC<Props> = (props) => {
     );
   }
 
-  function render_file_menu(): Rendered {
-    if (!(props.is_only || props.is_full)) {
+  function render_edit(): Rendered {
+    if (!is_visible("edit") || is_public) {
       return;
     }
+    return (
+      <Button
+        key={"edit"}
+        bsSize={button_size()}
+        onClick={() => props.actions["edit"]?.(props.id)}
+        title={button_title("shell", "Click to edit file directly here")}
+      >
+        <Icon name={"lock"} /> <VisibleMDLG>Locked</VisibleMDLG>
+      </Button>
+    );
+  }
+
+  function render_readonly_view(): Rendered {
+    if (!is_visible("readonly_view") || is_public) {
+      return;
+    }
+    return (
+      <Button
+        key={"readonly-view"}
+        bsSize={button_size()}
+        onClick={() => props.actions["readonly_view"]?.(props.id)}
+        title={button_title("shell", "Click to switch to readonly view")}
+      >
+        <Icon name={"pencil"} /> <VisibleMDLG>Editable</VisibleMDLG>
+      </Button>
+    );
+  }
+
+  function render_file_menu(): Rendered {
+    if (student_project_functionality.disableActions) return;
+    const small = !(props.is_only || props.is_full);
     const spec = props.editor_spec[props.type];
     if (spec != null && spec.hide_file_menu) return;
     return (
       <EditorFileInfoDropdown
         key={"info"}
-        title={"File related actions"}
         filename={props.path}
-        actions={redux.getProjectActions(props.project_id)}
+        project_id={props.project_id}
         is_public={false}
-        label={"File"}
-        bsSize={button_size()}
+        label={small ? "" : "File"}
+        style={small ? { height: button_height() } : undefined}
       />
     );
   }
@@ -1246,13 +1363,15 @@ export const FrameTitleBar: React.FC<Props> = (props) => {
     v.push(render_save_timetravel_group());
     v.push(render_build());
     v.push(render_force_build());
+    v.push(render_edit());
+    v.push(render_readonly_view());
     v.push(render_sync());
     v.push(render_switch_to_file());
     v.push(render_clean());
+    v.push(render_zoom_group());
     if (!is_public) {
       v.push(render_undo_redo_group());
     }
-    v.push(render_zoom_group());
     v.push(render_restart());
     v.push(render_close_and_halt(labels));
 
@@ -1265,12 +1384,14 @@ export const FrameTitleBar: React.FC<Props> = (props) => {
       v.push(render_format_group());
     }
     v.push(render_edit_init_script());
+    v.push(render_clear());
     v.push(render_count_words());
-    v.push(render_table_of_contents());
     v.push(render_kick_other_users_out());
     v.push(render_format());
     v.push(render_shell());
     v.push(render_print());
+    v.push(render_table_of_contents());
+    v.push(render_guide(labels));
     v.push(render_help(labels));
 
     const w: Rendered[] = [];
@@ -1294,7 +1415,7 @@ export const FrameTitleBar: React.FC<Props> = (props) => {
   function render_main_buttons(): Rendered {
     // This is complicated below (with the flex display) in order to have a drop down menu that actually appears
     // and *ALSO* have buttons that vanish when there are many of them.
-    const style: CSS.Properties = {
+    const style: CSS = {
       flexFlow: "row nowrap",
       display: "flex",
     };

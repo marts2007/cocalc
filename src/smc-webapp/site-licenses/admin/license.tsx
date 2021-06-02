@@ -17,8 +17,11 @@ import {
   merge,
   replace_all,
   plural,
-} from "smc-util/misc2";
-import { hours_ago, days_ago, weeks_ago, months_ago } from "smc-util/misc";
+  hours_ago,
+  days_ago,
+  weeks_ago,
+  months_ago,
+} from "smc-util/misc";
 import {
   A,
   CopyToClipBoard,
@@ -33,9 +36,9 @@ import {
   EditUpgrades,
   scale_by_display_factors,
 } from "./upgrades";
+import { DisplayQuota, EditQuota } from "./quota";
 import { Projects } from "../../admin/users/projects";
 import { Managers } from "./managers";
-import { UserMap } from "../../todo-types";
 import { ManagerInfo } from "./types";
 
 const BACKGROUNDS = ["white", "#f8f8f8"];
@@ -47,7 +50,6 @@ interface Props {
   license: TypedMap<SiteLicense>;
   edits?: TypedMap<SiteLicense>;
   usage_stats?: number; // for now this is just the number of projects running right now with the license; later it might have hourly/daily/weekly, active, etc.
-  user_map?: UserMap;
   manager_info?: ManagerInfo;
 }
 
@@ -90,7 +92,7 @@ export class License extends Component<Props> {
       const backgroundColor = BACKGROUNDS[i % 2];
       i += 1;
       let x = this.render_value(field, val);
-      if (field == "id") {
+      if (field == "id" && typeof x == "string") {
         x = (
           <CopyToClipBoard
             value={x}
@@ -175,7 +177,6 @@ export class License extends Component<Props> {
           x = (
             <Managers
               managers={val}
-              user_map={this.props.user_map}
               license_id={this.props.license.get("id")}
               manager_info={this.props.manager_info}
             />
@@ -193,7 +194,15 @@ export class License extends Component<Props> {
           x = (
             <EditUpgrades
               upgrades={val}
-              onChange={onChange}
+              license_id={this.props.license.get("id")}
+              license_field={field}
+            />
+          );
+          break;
+        case "quota":
+          x = (
+            <EditQuota
+              quota={val}
               license_id={this.props.license.get("id")}
               license_field={field}
             />
@@ -232,9 +241,9 @@ export class License extends Component<Props> {
                 rows={4}
                 value={value}
                 onChange={(e) => onChange((e.target as any).value)}
-                onBlur={() =>
-                  onChange(JSON.stringify(jsonic(value), undefined, 2))
-                }
+                onBlur={() => {
+                  onChange(JSON.stringify(jsonic(value), undefined, 2));
+                }}
               />
               <br />
               Input forgivingly parsed using{" "}
@@ -340,7 +349,6 @@ export class License extends Component<Props> {
           x = (
             <Managers
               managers={val}
-              user_map={this.props.user_map}
               license_id={this.props.license.get("id")}
               manager_info={this.props.manager_info}
             />
@@ -348,6 +356,9 @@ export class License extends Component<Props> {
           break;
         case "upgrades":
           x = <DisplayUpgrades upgrades={val} />;
+          break;
+        case "quota":
+          x = <DisplayQuota quota={val} />;
           break;
         case "map":
           if (!val) {
@@ -431,7 +442,7 @@ export class License extends Component<Props> {
       style.fontWeight = "bold";
     }
     return (
-      <span>
+      <div style={{ marginLeft: "5px" }}>
         <span style={style}>
           {this.props.usage_stats ?? 0} running{" "}
           {plural(this.props.usage_stats, "project")} currently using this
@@ -479,7 +490,7 @@ export class License extends Component<Props> {
         >
           month
         </a>
-      </span>
+      </div>
     );
   }
 
@@ -528,12 +539,18 @@ export class License extends Component<Props> {
       return { is_active: false, why_not: "it has expired" };
     // Any actual upgrades?
     const upgrades = this.props.license.get("upgrades");
-    if (upgrades == null || upgrades.size == 0)
-      return { is_active: false, why_not: "no upgrades are configured" };
-
-    for (let [field, val] of upgrades) {
-      field = field; // typescript
-      if (val) return { is_active: true }; // actual upgrade, so yes is having an impact.
+    if (upgrades != null) {
+      for (let [field, val] of upgrades) {
+        field = field; // typescript
+        if (val) return { is_active: true }; // actual upgrade, so yes is having an impact.
+      }
+    }
+    const quota = this.props.license.get("quota");
+    if (quota != null) {
+      for (let [field, val] of quota) {
+        field = field; // typescript
+        if (val) return { is_active: true }; // actual quota, so yes is having an impact.
+      }
     }
     return { is_active: false, why_not: "no upgrades are configured" };
   }

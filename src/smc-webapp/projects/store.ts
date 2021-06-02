@@ -7,16 +7,18 @@ import { List, Map, Set } from "immutable";
 import { redux, Store } from "../app-framework";
 import { webapp_client } from "../webapp-client";
 import {
-  copy,
   coerce_codomain_to_numbers,
+  map_sum,
+  copy,
   cmp,
   keys,
   len,
-  map_sum,
   months_before,
+  parse_number_input,
+  is_valid_uuid_string,
 } from "smc-util/misc";
 import { CUSTOM_IMG_PREFIX } from "../custom-software/util";
-
+import { max_quota, site_license_quota } from "smc-util/upgrades/quota";
 import { PROJECT_UPGRADES } from "smc-util/schema";
 import { fromPairs } from "lodash";
 const ZERO_QUOTAS = fromPairs(
@@ -27,11 +29,13 @@ import { Upgrades } from "smc-util/upgrades/types";
 import { has_internet_access } from "../upgrades/upgrade-utils";
 
 import { WebsocketState } from "../project/websocket/websocket-state";
+import { StudentProjectFunctionality } from "smc-webapp/course/configuration/customize-student-project-functionality";
 
-export type ProjectMap = Map<string, Map<string, any>>;
+export type Project = Map<string, any>;
+export type ProjectMap = Map<string, Project>;
 
-export interface State {
-  project_map: ProjectMap | undefined;
+export interface ProjectsState {
+  project_map?: ProjectMap;
   open_projects: List<string>; // the opened projects in *tab* order
 
   search: string;
@@ -47,7 +51,7 @@ export interface State {
 }
 
 // Define projects store
-export class ProjectsStore extends Store<State> {
+export class ProjectsStore extends Store<ProjectsState> {
   // Return true if the given project_id is of a project that is
   // currently known.
   public has_project(project_id: string): boolean {
@@ -125,6 +129,10 @@ export class ProjectsStore extends Store<State> {
     return this.getIn(["project_map", project_id, "course"]);
   }
 
+  public is_student_project(project_id: string): boolean {
+    return !!this.get_course_info(project_id);
+  }
+
   /*
   If a course payment is required for this project from the signed in user,
   returns time when it will be required; otherwise, returns undefined.
@@ -151,10 +159,6 @@ export class ProjectsStore extends Store<State> {
     if (is_student && !this.is_deleted(project_id)) {
       // signed in user is the student
       let pay = info.get("pay");
-      if (pay === true) {
-        // bug -- can delete this workaround in March 2019.
-        pay = new Date("2019-02-15");
-      }
       if (pay) {
         if (webapp_client.server_time() >= months_before(-3, pay)) {
           // It's 3 months after date when sign up required, so course likely over,
@@ -238,6 +242,13 @@ export class ProjectsStore extends Store<State> {
     return me.get("group");
   }
 
+  public is_collaborator(project_id: string): boolean {
+    return (
+      webapp_client.account_id != null &&
+      this.getIn(["project_map", project_id, webapp_client.account_id]) != null
+    );
+  }
+
   public is_project_open(project_id: string): boolean {
     return this.get("open_projects").includes(project_id);
   }
@@ -278,7 +289,7 @@ export class ProjectsStore extends Store<State> {
         .getIn(["users", webapp_client.account_id, "upgrades"])
         ?.toJS();
       if (upgrades == null) return;
-      total = map_sum(total, upgrades);
+      total = map_sum(total as any, upgrades);
     });
     return total;
   }
@@ -351,17 +362,8 @@ export class ProjectsStore extends Store<State> {
     return upgrades;
   }
 
-  // The timestap (in server time) when this project will
-  // idle timeout if not edited by anybody.
-  public get_idle_timeout_horizon(project_id: string): Date | undefined {
-    // time when last edited in server time
-    const last_edited = this.getIn(["project_map", project_id, "last_edited"]);
-
-    // It can be undefined, e.g., for admin viewing a project they are not a collab on, since
-    // the project isn't in the project_map.  See https://github.com/sagemathinc/cocalc/issues/4686
-    // Using right now in that case is a good approximation.
-    if (last_edited == null) return;
-
+  // in seconds
+  public get_idle_timeout(project_id: string): number {
     // mintime = time in seconds project can stay unused
     // (0 is probably wrong but better than this being "undefined".)
     let mintime =
@@ -376,7 +378,22 @@ export class ProjectsStore extends Store<State> {
       project_id
     );
     mintime += site_license.mintime;
-    return new Date(last_edited.valueOf() + 1000 * mintime);
+
+    return 1000 * mintime;
+  }
+
+  // The timestap (in server time) when this project will
+  // idle timeout if not edited by anybody.
+  public get_idle_timeout_horizon(project_id: string): Date | undefined {
+    // time when last edited in server time
+    const last_edited = this.getIn(["project_map", project_id, "last_edited"]);
+
+    // It can be undefined, e.g., for admin viewing a project they are not a collab on, since
+    // the project isn't in the project_map.  See https://github.com/sagemathinc/cocalc/issues/4686
+    // Using right now in that case is a good approximation.
+    if (last_edited == null) return;
+    const idle_timeout = this.get_idle_timeout(project_id);
+    return new Date(last_edited.valueOf() + idle_timeout);
   }
 
   // Returns the TOTAL of the quotas contributed by all
@@ -390,14 +407,16 @@ export class ProjectsStore extends Store<State> {
       project_id,
       "site_license",
     ])?.toJS();
-    const upgrades = Object.assign({}, ZERO_QUOTAS);
+    let upgrades = Object.assign({}, ZERO_QUOTAS);
     if (site_license != null) {
+      // contributions from old-format site license contribution
       for (let license_id in site_license) {
         const info = site_license[license_id];
-        const object = info != null ? info : {};
+        const object = info ?? {};
         for (let prop in object) {
           const val = object[prop];
-          upgrades[prop] = (upgrades[prop] ?? 0) + parseInt(val);
+          upgrades[prop] =
+            (upgrades[prop] ?? 0) + (parse_number_input(val) ?? 0);
         }
       }
     }
@@ -425,10 +444,62 @@ export class ProjectsStore extends Store<State> {
       copy(ZERO_QUOTAS);
     coerce_codomain_to_numbers(base_values);
     const upgrades = this.get_total_project_upgrades(project_id);
-    const site_license = this.get_total_site_license_upgrades_to_project(
+    const site_license_upgrades = this.get_total_site_license_upgrades_to_project(
       project_id
     );
-    return map_sum(map_sum(base_values, upgrades), site_license);
+    const quota = map_sum(
+      map_sum(base_values, upgrades as any),
+      site_license_upgrades as any
+    );
+    this.new_format_license_quota(project_id, quota);
+
+    return quota;
+  }
+
+  public is_always_running(project_id: string): boolean {
+    // always_running can only be in settings (used by admins),
+    // or in quota field of some license
+    if (this.getIn(["project_map", project_id, "settings", "always_running"])) {
+      return true;
+    }
+    const site_license = this.getIn([
+      "project_map",
+      project_id,
+      "site_license",
+    ])?.toJS();
+    if (site_license != null) {
+      for (const license_id in site_license) {
+        if (site_license[license_id]?.quota?.always_running) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  // include contribution from new format of quotas for licenses
+  private new_format_license_quota(project_id: string, quota): void {
+    const site_license = this.getIn([
+      "project_map",
+      project_id,
+      "site_license",
+    ])?.toJS();
+    if (site_license != null) {
+      // TS: using "any" since we add some fields below
+      const license_quota: any = site_license_quota(site_license);
+      // Some different names/units are used for the frontend quota_console.
+      // It makes more sense to add them in here, rather than have confusing
+      // redundancy in the site_license_quota function.  Optimally, we would
+      // unify everything in the frontend ui and never have two different names
+      // and units for the same thing.
+      license_quota.cores = license_quota.cpu_limit;
+      delete license_quota["cpu_limit"];
+      license_quota.memory = license_quota.memory_limit;
+      delete license_quota["memory_limit"];
+      license_quota.cpu_shares = 1024 * (license_quota.cpu_request ?? 0);
+      delete license_quota["cpu_request"];
+      max_quota(quota, license_quota);
+    }
   }
 
   // we allow URLs in projects, which have member hosting or internet access
@@ -547,54 +618,26 @@ export class ProjectsStore extends Store<State> {
     return this.get("project_map")?.filter(by_csi).valueSeq();
   }
 
-  public get_project_select_list(
-    current_project_id: string,
-    show_hidden: boolean = true
-  ): undefined | { id: string; title: string }[] {
-    let map = this.get("project_map");
-    if (map == null) {
-      return;
+  public get_student_project_functionality(
+    project_id: string
+  ): StudentProjectFunctionality {
+    if (!is_valid_uuid_string(project_id)) {
+      throw Error(`${project_id} must be a UUID`);
     }
-    const { account_id } = webapp_client;
-    let list: { id: string; title: string }[] = [];
-    if (current_project_id != null && map.has(current_project_id)) {
-      list.push({
-        id: current_project_id,
-        title: map.getIn([current_project_id, "title"]),
-      });
-      map = map.delete(current_project_id);
-    }
-    const v = map.valueSeq();
-    v.sort(function (a, b) {
-      if (a.get("last_edited") < b.get("last_edited")) {
-        return 1;
-      } else if (a.get("last_edited") > b.get("last_edited")) {
-        return -1;
-      }
-      return 0;
-    });
-    const others: { id: string; title: string }[] = [];
-    for (let i of v) {
-      // Deleted projects have a map node " 'deleted': true ". Standard projects do not have this property.
-      if (
-        !i.get("deleted") &&
-        (show_hidden || !i.get("users").get(account_id).get("hide"))
-      ) {
-        others.push({ id: i.get("project_id"), title: i.get("title") });
-      }
-    }
-    list = list.concat(others);
-    return list;
+    return (
+      this.getIn([
+        "project_map",
+        project_id,
+        "course",
+        "student_project_functionality",
+      ])?.toJS() ?? {}
+    );
   }
 }
 
 // WARNING: A lot of code relies on the assumption project_map is
 // undefined until it is loaded from the server.
 const init_store = {
-  // TODO: "undefined as any" is due to typescript requiring this
-  // to somehow have a more general type than in State above
-  // (which is weird/backwards to me...)
-  project_map: undefined as any,
   open_projects: List<string>(), // ordered list of open projects
 
   search: "",
@@ -607,7 +650,7 @@ const init_store = {
   public_project_titles: Map<string, any>(),
 
   project_websockets: Map<string, WebsocketState>(),
-};
+} as ProjectsState;
 
 export const store = redux.createStore("projects", ProjectsStore, init_store);
 

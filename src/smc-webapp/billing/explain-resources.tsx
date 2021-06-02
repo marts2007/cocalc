@@ -4,7 +4,7 @@
  */
 
 import { Col, Row } from "react-bootstrap";
-import { Component, React, Rendered } from "../app-framework";
+import { React } from "../app-framework";
 import { Space } from "../r_misc/space";
 import { A } from "../r_misc/A";
 const {
@@ -16,15 +16,19 @@ import { ProjectQuotaFreeTable } from "./project-quota-free-table";
 import { ProjectQuotaBoundsTable } from "./project-quota-bounds-table";
 import { DEDICATED_VM_TEXT } from "./dedicated-vm";
 import { FAQ } from "./faq";
+import { TITLE as COURSE_TITLE } from "./explain-course-licenses";
+import { DOC_LICENSE_URL } from "./data";
 
 interface Props {
   type: "shared" | "dedicated";
   is_static?: boolean;
 }
 
-export class ExplainResources extends Component<Props> {
-  private render_toc(): Rendered {
-    if (!this.props.is_static) {
+export const ExplainResources: React.FC<Props> = (props: Props) => {
+  const { type, is_static } = props;
+
+  function render_toc() {
+    if (!is_static) {
       return;
     }
     return (
@@ -33,13 +37,13 @@ export class ExplainResources extends Component<Props> {
         <ul style={{ paddingLeft: "20px" }}>
           <li>
             <b>
-              <a href="#subscriptions">Personal subscriptions</a>
+              <a href="#subscriptions">Service subscriptions</a>
             </b>
             : upgrade your projects
           </li>
           <li>
             <b>
-              <a href="#courses">Course packages</a>
+              <a href="#courses">{COURSE_TITLE}</a>
             </b>
             : upgrade student projects for teaching a course
           </li>
@@ -49,13 +53,19 @@ export class ExplainResources extends Component<Props> {
             </b>
             : a node in the cluster for large workloads
           </li>
+          <li>
+            <b>
+              <a href="#onprem">On-Premises</a>
+            </b>
+            : run <SiteName /> on your own hardware
+          </li>
         </ul>
         <Space />
       </>
     );
   }
 
-  private render_shared(): Rendered {
+  function render_shared() {
     return (
       <div>
         <Row>
@@ -63,7 +73,7 @@ export class ExplainResources extends Component<Props> {
             <h4>Questions</h4>
             <div style={{ fontSize: "12pt" }}>
               Please immediately email us at <HelpEmailLink />,{" "}
-              {!this.props.is_static ? (
+              {!is_static ? (
                 <span>
                   {" "}
                   click the Help button above or read our{" "}
@@ -122,7 +132,7 @@ export class ExplainResources extends Component<Props> {
             </div>
             <Space />
 
-            <h4>Quota upgrades</h4>
+            <h4>Upgrading projects</h4>
             <div>
               By purchasing one or more of our subscriptions or plans, you
               receive a certain amount of{" "}
@@ -135,29 +145,44 @@ export class ExplainResources extends Component<Props> {
               simultaneously. On top of that, your{" "}
               <HelpEmailLink text={"support questions"} /> are prioritized.
             </div>
+            <div>
+              All project collaborators <em>collectively contribute</em> to the
+              same project &mdash; their contributions add together to benefit
+              all project collaborators equally.
+            </div>
+            <Space />
+
+            <h4>License Keys</h4>
+            <div>
+              <A href={DOC_LICENSE_URL}>
+                License Keys
+              </A>{" "}
+              are applied to projects. One key upgrades up to certain number of{" "}
+              <em>simultaneously running projects</em> with the given upgrade
+              schema.
+            </div>
+            <div>The following parameters determine the price:</div>
             <ul style={{ paddingLeft: "20px" }}>
+              <li>The number of projects</li>
+              <li>If you qualify for an academic discount</li>
               <li>
-                These upgrades are applied on top of the project{"'"}s free
-                quotas.
+                Upgrade schema per project: a small 1 GB memory / 1 shared CPU
+                upgrade is fine for basic calculations, but we find that many
+                data and computational science projects run better with
+                additional RAM and CPU.
               </li>
               <li>
-                You can upgrade the quotas up to the total amount given by your
-                subscription(s) and the upper limits per project.
+                Duration: monthly/yearly subscription or explicit start and end
+                dates.
               </li>
               <li>
-                Project collaborators can <em>collectively contribute</em> to
-                the same project, in order to increase the quotas of their
-                common project &mdash; these contributions add together to
-                benefit all project collaborators equally.
-              </li>
-              <li>
-                You may also purchase any plans <em>more than once</em>, in
-                order to increase the total amount of upgrades available to you.
+                Purchase method: online purchasing vs. retail
+                (invoicing/billing/...)
               </li>
             </ul>
             <Space />
 
-            {this.render_toc()}
+            {render_toc()}
 
             <Space />
             <h4>More information</h4>
@@ -178,18 +203,16 @@ export class ExplainResources extends Component<Props> {
     );
   }
 
-  private render_dedicated(): Rendered {
+  function render_dedicated() {
     return DEDICATED_VM_TEXT;
   }
 
-  public render(): Rendered {
-    switch (this.props.type) {
-      case "shared":
-        return this.render_shared();
-      case "dedicated":
-        return this.render_dedicated();
-      default:
-        throw Error(`unknown type ${this.props.type}`);
-    }
+  switch (type) {
+    case "shared":
+      return render_shared();
+    case "dedicated":
+      return render_dedicated();
+    default:
+      throw Error(`unknown type ${type}`);
   }
-}
+};

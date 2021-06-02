@@ -9,6 +9,7 @@ import { AccountActions } from "./actions";
 import { AccountStore } from "./store";
 import { AccountTable } from "./table";
 import { init_dark_mode } from "./dark-mode";
+import { reset_password_key } from "../client/password-reset";
 
 export function init(redux) {
   // Register account store
@@ -17,6 +18,9 @@ export function init(redux) {
     require("smc-util/schema").SCHEMA.accounts.user_query.get.fields
   );
   // ... except for show_global_info2 (null or a timestamp)
+  // REGISTER and STRATEGIES are injected in app.html via the /customize endpoint -- do not delete them!
+  init.token = global["REGISTER"];
+  init.strategies = global["STRATEGIES"];
   init.other_settings.show_global_info2 = "loading"; // indicates there is no data yet
   init.editor_settings.physical_keyboard = "NO_DATA"; // indicator that there is no data
   init.user_type = misc.get_local_storage(webapp_client.remember_me_key())
@@ -29,6 +33,9 @@ export function init(redux) {
   init_dark_mode(store);
 
   redux.createTable("account", AccountTable);
+
+  // Password reset
+  actions.setState({ reset_key: reset_password_key() });
 
   // Login status
   webapp_client.on("signed_in", function (mesg) {

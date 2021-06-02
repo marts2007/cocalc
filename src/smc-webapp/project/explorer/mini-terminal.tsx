@@ -15,16 +15,13 @@ IDEAS FOR LATER:
 
 */
 
-import { React, ReactDOM } from "../../app-framework";
+import { React } from "../../app-framework";
 import { user_activity } from "../../tracker";
 import { ProjectActions } from "../../project_actions";
-const {
-  Button,
-  FormControl,
-  InputGroup,
-  FormGroup,
-} = require("react-bootstrap");
+import { Input } from "antd";
+import { Button } from "smc-webapp/antd-bootstrap";
 import { Icon } from "smc-webapp/r_misc";
+import { useStudentProjectFunctionality } from "smc-webapp/course";
 
 // used to run the command -- could change to use an action and the store.
 import { webapp_client } from "../../webapp-client";
@@ -36,7 +33,7 @@ export const output_style_searchbox: React.CSSProperties = {
   boxShadow: "0px 0px 7px #aaa",
   maxHeight: "450px",
   overflow: "auto",
-};
+} as const;
 
 export const output_style_miniterm: React.CSSProperties = {
   position: "absolute",
@@ -47,7 +44,7 @@ export const output_style_miniterm: React.CSSProperties = {
   right: 0,
   maxWidth: "80%",
   marginRight: "5px",
-};
+} as const;
 
 const BAD_COMMANDS = {
   sage: "Create a Sage worksheet instead,\nor type 'sage' in a full terminal.",
@@ -62,7 +59,7 @@ const BAD_COMMANDS = {
     "Type emacs in a full terminal instead,\nor just click on the file in the listing.",
   open:
     "The open command is not yet supported\nin the miniterminal.  See\nhttps://github.com/sagemathinc/cocalc/issues/230",
-};
+} as const;
 
 const EXEC_TIMEOUT = 10; // in seconds
 
@@ -80,7 +77,7 @@ interface State {
   error?: string;
 }
 
-export class MiniTerminal extends React.Component<Props, State> {
+class MiniTerminal0 extends React.Component<Props, State> {
   private _id: number = 0;
 
   constructor(props) {
@@ -260,7 +257,6 @@ export class MiniTerminal extends React.Component<Props, State> {
   };
 
   render() {
-    // NOTE: The style in form below offsets Bootstrap's form margin-bottom of +15 to look good.
     // We don't use inline, since we still want the full horizontal width.
     return (
       <>
@@ -269,29 +265,25 @@ export class MiniTerminal extends React.Component<Props, State> {
             e.preventDefault();
             this.execute_command();
           }}
-          style={{ marginBottom: "-10px" }}
         >
-          <FormGroup>
-            <InputGroup>
-              <FormControl
-                type="text"
-                value={this.state.input}
-                ref="input"
-                placeholder="Terminal command..."
-                onChange={(e) => {
-                  e.preventDefault();
-                  const input = ReactDOM.findDOMNode(this.refs.input)?.value;
-                  if (input == null) return;
-                  this.setState({ input });
-                }}
-                onKeyDown={this.keydown}
-              />
-              <InputGroup.Button>
+          <Input
+            type="text"
+            value={this.state.input}
+            placeholder="Terminal command..."
+            onChange={(e) => {
+              e.preventDefault();
+              const input = e?.target?.value;
+              if (input == null) return;
+              this.setState({ input });
+            }}
+            onKeyDown={this.keydown}
+            addonAfter={
+              <>
                 {this.render_clear()}
                 {this.render_button()}
-              </InputGroup.Button>
-            </InputGroup>
-          </FormGroup>
+              </>
+            }
+          />
         </form>
         <div style={output_style_miniterm}>
           {this.render_output(this.state.error, {
@@ -304,3 +296,13 @@ export class MiniTerminal extends React.Component<Props, State> {
     );
   }
 }
+
+export const MiniTerminal: React.FC<Props> = (props) => {
+  const student_project_functionality = useStudentProjectFunctionality(
+    props.project_id
+  );
+  if (student_project_functionality.disableTerminals) {
+    return <></>;
+  }
+  return <MiniTerminal0 {...props} />;
+};

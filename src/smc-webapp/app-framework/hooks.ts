@@ -5,12 +5,22 @@
 
 /* Gather together and export some common hooks for convenience. */
 
+declare const window: any;
+
 import { delay } from "awaiting";
-export { useState, useEffect, useMemo, useRef, useLayoutEffect } from "react";
+export {
+  useState,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useLayoutEffect,
+} from "react";
 import { useAsyncEffect } from "use-async-effect";
 export { useAsyncEffect };
 export { useSelector } from "react-redux";
 import { useRef, useEffect, useState } from "react";
+export { useFrameContext } from "../frame-editors/frame-tree/frame-context";
 
 // A *ref* that is true after component mounts, then false once
 // the component unmounts.  This obviously must be a ref since
@@ -60,4 +70,26 @@ export function useDelayedRender(delay_ms: number) {
     set_render(true);
   }, []);
   return render;
+}
+
+function getWindowDimensions() {
+  const { innerWidth: width, innerHeight: height } = window;
+  return { width, height };
+}
+
+export function useWindowDimensions() {
+  const [windowDimensions, setWindowDimensions] = useState(
+    getWindowDimensions()
+  );
+
+  useEffect(() => {
+    function handleResize() {
+      setWindowDimensions(getWindowDimensions());
+    }
+
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
+  return windowDimensions;
 }

@@ -8,18 +8,9 @@ The Landing Page
 */
 
 import * as immutable from "immutable";
-
-import {
-  Component,
-  rclass,
-  React,
-  redux,
-  rtypes,
-  Rendered,
-} from "../app-framework";
-
+import { Component, rclass, React, rtypes, Rendered } from "../app-framework";
 import { Row, Col, Alert } from "../antd-bootstrap";
-import { UNIT, COLORS } from "../r_misc";
+import { UNIT } from "../r_misc";
 import { SiteDescription, Footer } from "../customize";
 import { SignUp } from "./sign-up";
 import { SignIn } from "./sign-in";
@@ -35,25 +26,19 @@ import {
 } from "../launch/actions";
 import { NAME as ComputeImageStoreName } from "../custom-software/util";
 import { ComputeImages, launchcode2display } from "../custom-software/init";
+import { ShowSupportLink } from "../support";
+import { PassportStrategy } from "../account/passport-types";
+import { capitalize } from "smc-util/misc";
+import { COLORS, DOC_URL } from "smc-util/theme";
+import { APP_ICON_WHITE, APP_LOGO_NAME_WHITE } from "../art";
+import { init } from "./registration";
+init(); // this is a fallback
 
 const DESC_FONT = "sans-serif";
 
-// import { ShowSupportLink } from "../support";
-const { ShowSupportLink } = require("../support");
-import { PassportStrategy } from "../account/passport-types";
-import { reset_password_key } from "../client/password-reset";
-import { capitalize } from "smc-util/misc2";
-import { DOC_URL } from "smc-util/theme";
-import { APP_ICON_WHITE, APP_LOGO_NAME_WHITE } from "../art";
-
-$.get(window.app_base_url + "/registration", function (obj, status) {
-  if (status === "success") {
-    return redux.getActions("account").setState({ token: obj.token });
-  }
-});
-
 interface Props {
   strategies?: immutable.List<PassportStrategy>;
+  exclusive_sso_domains?: Set<string>;
   sign_up_error?: immutable.Map<string, any>;
   sign_in_error?: string;
   signing_in?: boolean;
@@ -134,7 +119,7 @@ class LandingPage extends Component<Props & reduxProps, State> {
   }
 
   private render_password_reset(): Rendered {
-    const reset_key = reset_password_key();
+    const reset_key = this.props.reset_key;
     if (!reset_key) {
       return;
     }
@@ -407,6 +392,7 @@ class LandingPage extends Component<Props & reduxProps, State> {
               terms_of_service={this.props.terms_of_service}
               terms_of_service_url={this.props.terms_of_service_url}
               email_signup={this.props.email_signup}
+              exclusive_sso_domains={this.props.exclusive_sso_domains}
             />
           </Col>
           <Col md={6}>

@@ -6,18 +6,16 @@
 import { EventEmitter } from "events";
 import { List, fromJS } from "immutable";
 import { throttle } from "lodash";
-
+import { delay } from "awaiting";
 import { SyncTable } from "smc-util/sync/table";
 import { webapp_client } from "../../webapp-client";
 import { redux, TypedMap } from "../../app-framework";
-import { merge, path_split } from "smc-util/misc2";
+import { close, merge, path_split } from "smc-util/misc";
 import { once } from "smc-util/async-utils";
 import { deleted_file_variations } from "smc-util/delete-files";
 import { exec, query } from "../../frame-editors/generic/client";
-
 import { get_directory_listing } from "../directory-listing";
 import { DirectoryListingEntry } from "smc-util/types";
-
 import { WATCH_TIMEOUT_MS } from "smc-util/db-schema/listings";
 export const WATCH_THROTTLE_MS = WATCH_TIMEOUT_MS / 2;
 
@@ -252,7 +250,9 @@ export class Listings extends EventEmitter {
       ?.get("missing");
   }
 
-  public async get_listing_directly(path: string): Promise<DirectoryListingEntry[]> {
+  public async get_listing_directly(
+    path: string
+  ): Promise<DirectoryListingEntry[]> {
     const store = redux.getStore("projects");
     // make sure that our relationship to this project is known.
     if (store == null) throw Error("bug");
@@ -278,12 +278,17 @@ export class Listings extends EventEmitter {
     this.set_state("closed");
     if (this.table != null) {
       this.table.close();
-      delete this.table;
     }
     this.removeAllListeners();
-    delete this.last_version;
-    delete this.project_id;
-    delete this.throttled_watch;
+    close(this);
+    this.set_state("closed");
+  }
+
+  // This is used to possibly work around a rare bug.
+  // https://github.com/sagemathinc/cocalc/issues/4790
+  private async re_init(): Promise<void> {
+    this.state = "init";
+    await this.init();
   }
 
   private async init(): Promise<void> {
@@ -291,7 +296,15 @@ export class Listings extends EventEmitter {
       throw Error("must be in init state");
     }
     // Make sure there is a working websocket to the project
-    await webapp_client.project_client.websocket(this.project_id);
+    while (true) {
+      try {
+        await webapp_client.project_client.websocket(this.project_id);
+        break;
+      } catch (_) {
+        if (this.state == ("closed" as State)) return;
+        await delay(3000);
+      }
+    }
     if ((this.state as State) == "closed") return;
 
     // Now create the table.
@@ -360,22 +373,30 @@ export class Listings extends EventEmitter {
   }
 
   private get_table(): SyncTable {
-    if (
-      this.state != "ready" ||
-      this.table == null ||
-      this.table.get_state() == "closed"
-    ) {
+    if (this.state != "ready") {
       throw Error("table not initialized ");
+    }
+    if (this.table == null) {
+      throw Error("table is null");
+    }
+    if (this.table.get_state() == "closed") {
+      throw Error("table is closed");
     }
     return this.table;
   }
 
   private async set(obj: Listing): Promise<void> {
-    this.get_table().set(
-      merge({ project_id: this.project_id }, obj),
-      "shallow"
-    );
-    await this.get_table().save();
+    let table;
+    try {
+      table = this.get_table();
+    } catch (err) {
+      // See https://github.com/sagemathinc/cocalc/issues/4790
+      console.warn("Error getting table -- ", err);
+      await this.re_init();
+      table = this.get_table();
+    }
+    table.set(merge({ project_id: this.project_id }, obj), "shallow");
+    await table.save();
   }
 
   public is_ready(): boolean {

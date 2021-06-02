@@ -17,6 +17,7 @@ export interface AccountState {
   terminal: immutable.Map<string, any>;
   first_name?: string;
   last_name?: string;
+  unlisted?: boolean;
   profile: TypedMap<{ color: string }>;
   email_address?: string;
   editor_settings: TypedMap<{
@@ -65,4 +66,5 @@ export interface AccountState {
   email_address_verified?: immutable.Map<string, Date>;
   evaluate_key?: string;
   autosave?: number;
+  show_purchase_form?: boolean;
 }

@@ -9,6 +9,7 @@ stripe payments api via backend hub
 
 import { callback2 } from "smc-util/async-utils";
 import * as message from "smc-util/message";
+import { PurchaseInfo } from "../site-licenses/purchase/util";
 
 export class StripeClient {
   private call_api: Function;
@@ -75,11 +76,6 @@ export class StripeClient {
         })
       )
     ).charges;
-  }
-
-  // gets stripe plans that could be subscribed to.
-  public async get_plans(): Promise<any> {
-    return (await this.call(message.stripe_get_plans())).plans;
   }
 
   public async create_subscription(opts: {
@@ -173,5 +169,15 @@ export class StripeClient {
       | { account_id?: string; email_address: string }
   ) {
     return await this.admin_create_invoice_item(opts);
+  }
+
+  // Purchase a license (technically this may or may not involve "stripe").
+  public async purchase_license(info: PurchaseInfo): Promise<string> {
+    return (await this.call(message.purchase_license({ info }))).resp;
+  }
+
+  // Purchase a license (technically this may or may not involve "stripe").
+  public async sync_site_license_subscriptions(): Promise<void> {
+    await this.call(message.stripe_sync_site_license_subscriptions());
   }
 }

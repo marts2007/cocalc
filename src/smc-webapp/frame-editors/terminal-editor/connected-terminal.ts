@@ -14,34 +14,32 @@ extra support for being connected to:
 import { Map } from "immutable";
 import { callback, delay } from "awaiting";
 import { redux, ProjectActions } from "../../app-framework";
-
+import { debounce } from "lodash";
 import { aux_file } from "../frame-tree/util";
-
 import { Terminal as XTerminal } from "xterm";
 require("xterm/css/xterm.css");
 
 import { FitAddon } from "xterm-addon-fit";
 import { WebLinksAddon } from "xterm-addon-web-links";
+//import { WebglAddon } from "xterm-addon-webgl";
 
 import { setTheme } from "./themes";
 import { project_websocket, touch, touch_project } from "../generic/client";
 import { Actions, CodeEditorState } from "../code-editor/actions";
 import { set_buffer, get_buffer } from "../../copy-paste-buffer";
-
 import {
+  close,
   endswith,
   filename_extension,
   replace_all,
   bind_methods,
-} from "smc-util/misc2";
+} from "smc-util/misc";
 import { open_init_file } from "./init-file";
-
 import { ConnectionStatus } from "../frame-tree/types";
-
 import { file_associations } from "../../file-associations";
 
 declare const $: any;
-import { starts_with_cloud_url } from "smc-webapp/process-links";
+import { starts_with_cloud_url } from "../../process-links";
 
 // NOTE: Keep this consistent with server.ts on the backend...  Someday make configurable.
 const SCROLLBACK = 5000;
@@ -61,7 +59,6 @@ export class Terminal<T extends CodeEditorState = CodeEditorState> {
   private project_id: string;
   private path: string;
   private term_path: string;
-  private number: number;
   private id: string;
   readonly rendererType: "dom" | "canvas";
   private terminal: XTerminal;
@@ -87,7 +84,7 @@ export class Terminal<T extends CodeEditorState = CodeEditorState> {
   private conn?: any;
   private touch_interval: any; // number doesn't work anymore and Timer doesn't exist everywhere... headache. Todo.
 
-  public is_mounted: boolean = false;
+  public is_visible: boolean = false;
   public element: HTMLElement;
 
   private command?: string;
@@ -95,6 +92,8 @@ export class Terminal<T extends CodeEditorState = CodeEditorState> {
 
   private fitAddon: FitAddon;
   private webLinksAddon: WebLinksAddon;
+
+  private render_done: Function[] = [];
 
   constructor(
     actions: Actions<T>,
@@ -105,6 +104,7 @@ export class Terminal<T extends CodeEditorState = CodeEditorState> {
     args?: string[]
   ) {
     bind_methods(this);
+    this.ask_for_cwd = debounce(this.ask_for_cwd);
 
     this.actions = actions;
     this.account_store = redux.getStore("account");
@@ -117,18 +117,38 @@ export class Terminal<T extends CodeEditorState = CodeEditorState> {
     this.path = actions.path;
     this.command = command;
     this.args = args;
-    this.rendererType = "dom";
+    this.rendererType = "canvas";
     const cmd = command ? "-" + replace_all(command, "/", "-") : "";
+    // This is the one and only place number is used.
+    // It's very important though.
     this.term_path = aux_file(`${this.path}-${number}${cmd}`, "term");
-    this.number = number;
     this.id = id;
+
     this.terminal = new XTerminal(this.get_xtermjs_options());
+
     this.webLinksAddon = new WebLinksAddon(handleLink);
     this.terminal.loadAddon(this.webLinksAddon);
+
     this.fitAddon = new FitAddon();
     this.terminal.loadAddon(this.fitAddon);
 
     this.terminal.open(parent);
+    if (this.terminal.element == null) {
+      throw Error("terminal.element must be defined");
+    }
+    // Uncomment this to enable a webgl terminal, with fallback to
+    // canvas if webgl isn't available.  I'm disabling this since it
+    // isn't noticeably faster over the web at least.  Also, I had
+    // it crash on latest chrome and a solid modern laptop, perha due to
+    // https://github.com/xtermjs/xterm.js/issues/2253
+    /*
+    try {
+      this.terminal.loadAddon(new WebglAddon());
+    } catch (err) {
+      console.log("WebGL Terminal not available; falling back to canvas.");
+    }
+    */
+
     this.element = this.terminal.element;
     this.update_settings();
     this.init_title();
@@ -169,7 +189,7 @@ export class Terminal<T extends CodeEditorState = CodeEditorState> {
     return { rendererType, scrollback, fontFamily };
   }
 
-  assert_not_closed(): void {
+  private assert_not_closed(): void {
     if (this.state === "closed") {
       throw Error("BUG -- Terminal is closed.");
     }
@@ -181,22 +201,15 @@ export class Terminal<T extends CodeEditorState = CodeEditorState> {
     this.state = "closed";
     clearInterval(this.touch_interval);
     this.account_store.removeListener("change", this.update_settings);
-    delete this.actions;
-    delete this.account_store;
-    delete this.terminal_settings;
-    delete this.project_id;
-    delete this.path;
-    delete this.term_path;
-    delete this.number;
-    delete this.render_buffer;
-    delete this.history;
     this.terminal.dispose();
     if (this.conn != null) {
       this.disconnect();
     }
+    close(this);
+    this.state = "closed";
   }
 
-  disconnect(): void {
+  private disconnect(): void {
     if (this.conn === undefined) {
       return;
     }
@@ -206,7 +219,7 @@ export class Terminal<T extends CodeEditorState = CodeEditorState> {
     this.set_connection_status("disconnected");
   }
 
-  update_settings(): void {
+  private update_settings(): void {
     this.assert_not_closed();
     const settings = this.account_store.get("terminal");
     if (settings == null || this.terminal_settings.equals(settings)) {
@@ -259,6 +272,7 @@ export class Terminal<T extends CodeEditorState = CodeEditorState> {
         options.args = this.args;
       }
       options.env = this.actions.get_term_env();
+      options.path = this.path;
       this.conn = await ws.api.terminal(this.term_path, options);
       if (this.state === "closed") {
         return;
@@ -291,6 +305,7 @@ export class Terminal<T extends CodeEditorState = CodeEditorState> {
     }
     this.conn_write_buffer = [];
     this.set_connection_status("connected");
+    this.ask_for_cwd();
   }
 
   async reload(): Promise<void> {
@@ -298,6 +313,7 @@ export class Terminal<T extends CodeEditorState = CodeEditorState> {
   }
 
   conn_write(data): void {
+    if (this.state == "closed") return; // no-op  -- see #4918
     if (this.conn === undefined) {
       this.conn_write_buffer.push(data);
       return;
@@ -343,12 +359,24 @@ export class Terminal<T extends CodeEditorState = CodeEditorState> {
       );
     }
     this.terminal.write(data);
+    // tell anyone who waited for output coming back about this
+    while (this.render_done.length > 0) {
+      this.render_done.pop()?.();
+    }
+  }
+
+  // blocks until the next call to this.render
+  async wait_for_next_render(): Promise<void> {
+    return new Promise((done, _) => {
+      this.render_done.push(done);
+    });
   }
 
   init_title(): void {
     this.terminal.onTitleChange((title) => {
       if (title != null) {
         this.actions.set_title(this.id, title);
+        this.ask_for_cwd();
       }
     });
   }
@@ -375,7 +403,14 @@ export class Terminal<T extends CodeEditorState = CodeEditorState> {
     }
     this.keyhandler_initialized = true;
     this.terminal.attachCustomKeyEventHandler((event) => {
-      //console.log("key", event);
+      /*
+      console.log("key", {
+        ctrlKey: event.ctrlKey,
+        metaKey: event.metaKey,
+        shiftKey: event.shiftKey,
+        key: event.key,
+      });
+      */
       // record that terminal is being actively used.
       this.last_active = new Date().valueOf();
       this.ignore_terminal_data = false;
@@ -392,7 +427,7 @@ export class Terminal<T extends CodeEditorState = CodeEditorState> {
       if (
         (event.ctrlKey || event.metaKey) &&
         event.shiftKey &&
-        event.key === "<"
+        (event.key === "<" || event.key == ",")
       ) {
         this.actions.decrease_font_size(this.id);
         return false;
@@ -401,7 +436,7 @@ export class Terminal<T extends CodeEditorState = CodeEditorState> {
       if (
         (event.ctrlKey || event.metaKey) &&
         event.shiftKey &&
-        event.key === ">"
+        (event.key === ">" || event.key == ".")
       ) {
         this.actions.increase_font_size(this.id);
         return false;
@@ -438,6 +473,9 @@ export class Terminal<T extends CodeEditorState = CodeEditorState> {
         if (typeof mesg.rows == "number" && typeof mesg.cols == "number") {
           this.terminal_resize({ rows: mesg.rows, cols: mesg.cols });
         }
+        break;
+      case "cwd":
+        this.actions.set_terminal_cwd(this.id, mesg.payload);
         break;
       case "burst":
         this.burst_on();
@@ -564,21 +602,25 @@ export class Terminal<T extends CodeEditorState = CodeEditorState> {
   }
 
   private use_subframe(path: string): boolean {
-    const this_path = filename_extension(this.actions.path);
-    if (this_path == "term") {
-      // This is a .term tab, so always open the path in a new tab.
+    const this_path_ext = filename_extension(this.actions.path);
+    if (this_path_ext == "term") {
+      // This is a .term tab, so always open the path in a new editor tab (not in the frame tre).
       return false;
     }
     const ext = filename_extension(path);
-    // Open file in this tab of it can be edited as source code.
     const a = file_associations[ext];
-    if (a == null || a.editor == "codemirror") return true;
-    if (this_path == "tex" && a.editor == "latex") return true;
+    // Latex editor -- open tex files in same frame:
+    if (this_path_ext == "tex" && a.editor == "latex") return true;
+    // Open file in this tab of it can be edited as code, or no editor
+    // so text is the fallback.
+    if (a == null || a.editor == "codemirror") {
+      return true;
+    }
     return false;
   }
 
   open_paths(paths: Path[]): void {
-    if (!this.is_mounted) {
+    if (!this.is_visible) {
       return;
     }
     const project_actions = this.actions._get_project_actions();
@@ -609,7 +651,7 @@ export class Terminal<T extends CodeEditorState = CodeEditorState> {
   }
 
   close_paths(paths: Path[]): void {
-    if (!this.is_mounted) {
+    if (!this.is_visible) {
       return;
     }
     for (const x of paths) {
@@ -645,6 +687,10 @@ export class Terminal<T extends CodeEditorState = CodeEditorState> {
     this.render_buffer = "";
   }
 
+  ask_for_cwd(): void {
+    this.conn_write({ cmd: "cwd" });
+  }
+
   kick_other_users_out(): void {
     this.conn_write({ cmd: "boot" });
   }
@@ -654,6 +700,8 @@ export class Terminal<T extends CodeEditorState = CodeEditorState> {
   }
 
   set_command(command: string | undefined, args: string[] | undefined): void {
+    this.command = command;
+    this.args = args;
     this.conn_write({ cmd: "set_command", command, args });
   }
 

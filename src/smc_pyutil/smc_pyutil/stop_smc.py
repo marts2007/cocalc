@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # This file is part of CoCalc: Copyright © 2020 Sagemath, Inc.
 # License: AGPLv3 s.t. "Commons Clause" – read LICENSE.md for details
 
@@ -30,7 +30,6 @@ def remove_port_files():
 def stop_daemons():
     print("stop daemons")
     cmd("smc-local-hub stop")
-    cmd("smc-console-server stop")
     cmd("smc-sage-server stop")
 
 

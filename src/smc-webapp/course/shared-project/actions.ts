@@ -12,6 +12,9 @@ import { redux } from "../../app-framework";
 import { CourseActions } from "../actions";
 import { CourseStore } from "../store";
 
+import { DEFAULT_COMPUTE_IMAGE } from "smc-util/compute-images";
+import { Datastore } from "../../projects/actions";
+
 export class SharedProjectActions {
   private actions: CourseActions;
 
@@ -139,22 +142,57 @@ export class SharedProjectActions {
           await actions.invite_collaborator(shared_project_id, account_id);
         }
       }
-      // Set license key if known; remove if not.
+
+      // Set license key(s) on the shared project too, if there is one
+      // NOTE: we never remove it or any other licenses from the shared project,
+      // since instructor may want to augment license with another.
       const site_license_id = store.getIn(["settings", "site_license_id"]);
       if (site_license_id) {
         await actions.add_site_license_to_project(
           shared_project_id,
           site_license_id
         );
-      } else {
-        // ensure no license set
-        await actions.remove_site_license_from_project(shared_project_id);
       }
+
+      // Also set the compute image
+      await this.set_project_compute_image();
     } catch (err) {
       this.actions.set_error(`Error configuring shared project - ${err}`);
     } finally {
       this.actions.set_activity({ id });
     }
+  }
+
+  public async set_project_compute_image(): Promise<void> {
+    const store = this.get_store();
+    const shared_project_id = store.get_shared_project_id();
+    if (!shared_project_id) {
+      return; // no shared project
+    }
+    const img_id =
+      store.get("settings").get("custom_image") ?? DEFAULT_COMPUTE_IMAGE;
+    const actions = redux.getProjectActions(shared_project_id);
+    await actions.set_compute_image(img_id);
+  }
+
+  public async set_datastore(): Promise<void> {
+    const store = this.get_store();
+    const shared_project_id = store.get_shared_project_id();
+    if (!shared_project_id) {
+      return; // no shared project
+    }
+    const datastore: Datastore = store.get_datastore();
+    const actions = redux.getActions("projects");
+    await actions.set_project_course_info(
+      shared_project_id,
+      store.get("course_project_id"),
+      store.get("course_filename"),
+      "", // pay
+      null, // account_id
+      null, // email_address
+      datastore,
+      "shared" // type of project
+    );
   }
 
   // set the shared project id in our syncdb

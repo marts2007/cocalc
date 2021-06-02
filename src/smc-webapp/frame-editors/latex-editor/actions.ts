@@ -20,11 +20,10 @@ import { delay } from "awaiting";
 import * as CodeMirror from "codemirror";
 import { normalize as path_normalize } from "path";
 import { union } from "lodash";
-
+import { reuseInFlight } from "async-await-utils/hof";
 import { fromJS, List, Map } from "immutable";
 import { once } from "smc-util/async-utils";
 import { project_api } from "../generic/client";
-
 import {
   Actions as BaseActions,
   CodeEditorState,
@@ -45,12 +44,12 @@ import { server_time, ExecOutput } from "../generic/client";
 import { clean } from "./clean";
 import { LatexParser, IProcessedLatexLog } from "./latex-log-parser";
 import { update_gutters } from "./gutters";
-import { pdf_path } from "./util";
+import { ensureTargetPathIsCorrect, pdf_path } from "./util";
 import { KNITR_EXTS } from "./constants";
 import { forgetDocument, url_to_pdf } from "./pdfjs-doc-cache";
 import { FrameTree } from "../frame-tree/types";
 import { Store } from "../../app-framework";
-import { createTypedMap, TypedMap } from "../../app-framework/TypedMap";
+import { createTypedMap, TypedMap } from "../../app-framework";
 import { print_html } from "../frame-tree/print";
 import { raw_url } from "../frame-tree/util";
 import {
@@ -60,9 +59,9 @@ import {
   startswith,
   change_filename_extension,
   sha1,
-} from "smc-util/misc2";
+} from "smc-util/misc";
 import { IBuildSpecs } from "./build";
-const { open_new_tab } = require("smc-webapp/misc_page");
+import { open_new_tab } from "../../misc-page";
 
 export interface BuildLog extends ExecOutput {
   parse?: IProcessedLatexLog;
@@ -96,6 +95,7 @@ export class Actions extends BaseActions<LatexEditorState> {
   public project_id: string;
   public store: Store<LatexEditorState>;
   private _last_sagetex_hash: string;
+  private _last_syncstring_hash: string | undefined;
   private is_building: boolean = false;
   private ext: string = "tex";
   private knitr: boolean = false; // true, if we deal with a knitr file
@@ -174,10 +174,12 @@ export class Actions extends BaseActions<LatexEditorState> {
     }
   }
 
+  private not_ready(): boolean {
+    return this._syncstring == null || this._syncstring.get_state() != "ready";
+  }
+
   private is_likely_master(): boolean {
-    if (this._syncstring == null || this._syncstring.get_state() != "ready") {
-      return false;
-    }
+    if (this.not_ready()) return false;
     const s = this._syncstring.to_str();
     return s && s.indexOf("\\document") != -1;
   }
@@ -185,16 +187,33 @@ export class Actions extends BaseActions<LatexEditorState> {
   private init_latexmk(): void {
     const account: any = this.redux.getStore("account");
 
-    this._syncstring.on("save-to-disk", () => {
-      if (
-        account &&
-        account.getIn(["editor_settings", "build_on_save"]) &&
-        this.is_likely_master()
-      ) {
-        // Only autobuild on save if there is a \\document* command.
-        this.build("", false);
-      }
-    });
+    this._syncstring.on(
+      "save-to-disk",
+      reuseInFlight(async () => {
+        if (this.not_ready()) return;
+        const hash = this._syncstring.hash_of_saved_version();
+        if (
+          account &&
+          account.getIn(["editor_settings", "build_on_save"]) &&
+          this._last_syncstring_hash != hash
+        ) {
+          this._last_syncstring_hash = hash;
+          // there are two cases: the parent "master" file triggers the build (usual case)
+          // or an included depdenency – i.e. where parent_file is set
+          if (this.parent_file != null && this.parent_file != this.path) {
+            const parent_actions = this.redux.getEditorActions(
+              this.project_id,
+              this.parent_file
+            ) as Actions;
+            // we're careful, maybe getEditorActions returns something else ...
+            await parent_actions?.build?.("", false);
+          } else if (this.parent_file == null && this.is_likely_master()) {
+            // also check is_likely_master, b/c there must be a \\document* command.
+            await this.build("", false);
+          }
+        }
+      })
+    );
   }
 
   private async init_build_directive(): Promise<void> {
@@ -270,6 +289,7 @@ export class Actions extends BaseActions<LatexEditorState> {
           if (cmd.length > 0) {
             const build_command = this.sanitize_build_cmd_str(cmd);
             this.setState({ build_command });
+            this.set_build_command(build_command);
             return;
           }
         } else if (cmd.size > 0) {
@@ -279,6 +299,7 @@ export class Actions extends BaseActions<LatexEditorState> {
           // we implemented output directory support.
           const build_command: List<string> = this.sanitize_build_cmd(cmd);
           this.setState({ build_command });
+          this.set_build_command(build_command.toJS());
           return;
         }
       }
@@ -309,9 +330,44 @@ export class Actions extends BaseActions<LatexEditorState> {
     return `-output-directory=${dir}`;
   }
 
-  private sanitize_build_cmd_str(cmd: string): string {
-    // this is when users manually set the command
-    // we ignore the output directory part, only focus on setting -deps for latexmk
+  public sanitize_build_cmd_str(cmd: string): string {
+    if (cmd.indexOf(";") != -1) {
+      // if there is a semicolon we allow anything...
+      return cmd;
+    }
+    // This is when users manually set the command or possibly slightly edited it.
+    // It's very important NOT to ignore the output directory part!!! See #5183,
+    // where we see ignoring this leads to massive problems.
+
+    // Make sure the output directory matches what we are actually using (the sha1 hash).
+    const i = cmd.indexOf("-output-directory=");
+    if (i != -1) {
+      let j = cmd.indexOf(" ", i);
+      if (j == -1) {
+        // at the end
+        j = cmd.length;
+      }
+      if (this.output_directory) {
+        // ensure it is set properly
+        if (
+          cmd.slice(i + "-output-directory=".length, j) != this.output_directory
+        ) {
+          cmd =
+            cmd.slice(0, i) +
+            `-output-directory=${this.output_directory} ` +
+            cmd.slice(j);
+        }
+      } else {
+        // ensure it is NOT set since it will definitely break things
+        cmd = cmd.slice(0, i) + cmd.slice(j);
+      }
+    }
+
+    //console.log("before", { cmd });
+    cmd = ensureTargetPathIsCorrect(cmd, path_split(this.path).tail);
+    //console.log("after", { cmd });
+
+    // We also focus on setting -deps for latexmk
     if (!cmd.trim().startsWith("latexmk")) return cmd;
     // -dependents- or -deps- ← don't shows the dependency list, we remove these
     // surrounded with spaces, to reduce changes of wrong matches
@@ -328,13 +384,38 @@ export class Actions extends BaseActions<LatexEditorState> {
   }
 
   private sanitize_build_cmd(cmd: List<string>): List<string> {
-    const has_output_dir = cmd.some(
-      (x) => x.indexOf("-output-directory=") != -1
-    );
-    if (!has_output_dir && this.output_directory != null) {
-      // no output directory option.
-      cmd = cmd.splice(cmd.size - 2, 0, this.output_directory_cmd_flag());
+    // First ensure the output directory is correct.
+
+    let outdir: string | undefined = undefined;
+    let i: number = -1;
+    for (const x of cmd) {
+      i += 1;
+      if (startswith(x, "-output-directory")) {
+        outdir = x;
+        break;
+      }
     }
+    if (this.output_directory != null) {
+      // make sure it is right
+      const should_be = this.output_directory_cmd_flag();
+      if (outdir != should_be) {
+        if (outdir == null) {
+          // The build command must specify the output directory option (but doesn't),
+          // so we set it.
+          cmd = cmd.splice(cmd.size - 2, 0, should_be);
+        } else {
+          // change it
+          cmd = cmd.set(i, should_be);
+        }
+      }
+    } else {
+      // make sure it is null -- otherwise remove it.
+      if (outdir != null) {
+        // need to remove it
+        cmd = cmd.delete(i);
+      }
+    }
+
     // -dependents- or -deps- ← don't shows the dependency list, we remove these
     for (const bad of ["-dependents-", "-deps-"]) {
       const idx = cmd.indexOf(bad);
@@ -346,6 +427,13 @@ export class Actions extends BaseActions<LatexEditorState> {
     if (!cmd.some((x) => x === "-deps" || x === "-dependents")) {
       cmd = cmd.splice(3, 0, "-deps");
     }
+
+    // Finally make sure the filename is right.
+    const filename = path_split(this.path).tail;
+    if (filename != cmd.get(cmd.size - 1)) {
+      cmd = cmd.set(cmd.size - 1, filename);
+    }
+
     return cmd;
   }
 
@@ -469,9 +557,16 @@ export class Actions extends BaseActions<LatexEditorState> {
     }
     const v: BaseActions<CodeEditorState>[] = [];
     for (const path of files) {
-      const actions = this.redux.getEditorActions(this.project_id, path);
+      const actions = this.redux.getEditorActions(
+        this.project_id,
+        path
+      ) as BaseActions<CodeEditorState>;
       if (actions == null) continue;
-      v.push(actions as BaseActions<CodeEditorState>);
+      // the parent (master) file is in the switch_to_files list!
+      if (this.path != path) {
+        actions.set_parent_file(this.path);
+      }
+      v.push(actions);
     }
     return v;
   }
@@ -1162,8 +1257,9 @@ export class Actions extends BaseActions<LatexEditorState> {
     }
   }
 
+  // time 0 implies to take the last_save_time,
   make_timestamp(time: number, force: boolean): number {
-    return force ? new Date().valueOf() : time || this.last_save_time();
+    return force ? Date.now() : time || this.last_save_time();
   }
 
   async word_count(time: number, force: boolean): Promise<void> {
@@ -1204,7 +1300,7 @@ export class Actions extends BaseActions<LatexEditorState> {
       // Clicked the sync button from within an editor
       this.forward_search(cm, editor_actions.path);
     } else {
-      // Clicked button associated to a a preview pane;
+      // Clicked button associated to a preview pane;
       // let the preview pane do the work.
       this.setState({ sync: id });
     }

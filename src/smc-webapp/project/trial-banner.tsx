@@ -6,6 +6,7 @@
 import * as humanizeList from "humanize-list";
 import { server_time } from "../frame-editors/generic/client";
 import {
+  CSS,
   React,
   redux,
   useMemo,
@@ -14,7 +15,15 @@ import {
 } from "../app-framework";
 const { Alert } = require("react-bootstrap");
 import { Icon, A } from "../r_misc";
-const trial_url = "https://doc.cocalc.com/trial.html";
+export const DOC_TRIAL = "https://doc.cocalc.com/trial.html";
+import { allow_project_to_run } from "./client-side-throttle";
+
+// explains implications for having no internet and/or no member hosting
+const A_STYLE = {
+  cursor: "pointer",
+  color: "white",
+  fontWeight: "bold",
+} as CSS;
 
 interface Props {
   project_id: string;
@@ -41,67 +50,72 @@ export const TrialBanner: React.FC<Props> = React.memo(({ project_id }) => {
     "free_warning_closed"
   );
 
-  function message(
-    host: boolean,
-    internet: boolean,
-    color
-  ): JSX.Element | undefined {
-    // explains implications for having no internet and/or no member hosting
-    const a_style: React.CSSProperties = {
-      cursor: "pointer",
-      color,
-      fontWeight: "bold",
-    };
+  function message(host: boolean, internet: boolean): JSX.Element | undefined {
+    const allow_run = allow_project_to_run(project_id);
+
+    const proj_created =
+      project_map?.getIn([project_id, "created"]) ?? new Date(0);
+    const age_ms: number = server_time().getTime() - proj_created.getTime();
+    const age_days = age_ms / (24 * 60 * 60 * 1000);
+
     const trial_project = (
       <strong>
-        <A href={trial_url} style={a_style}>
-          Trial Project
+        <A href={DOC_TRIAL} style={A_STYLE}>
+          Free Trial (Day {Math.floor(age_days)})
         </A>
       </strong>
     );
     const no_internet =
-      "you can't install Python packages, clone from GitHub, or download datasets";
-    const no_host = ["expect poor performance", "random interruptions"];
+      "you can't install packages, clone from GitHub, or download datasets";
+    const no_host = ["expect VERY bad performance (e.g., 10 times slower!)"];
     const inetquota =
       "https://doc.cocalc.com/billing.html#what-exactly-is-the-internet-access-quota";
     const memberquota =
       "https://doc.cocalc.com/billing.html#what-is-member-hosting";
+    const add_license =
+      "https://doc.cocalc.com/project-settings.html#project-add-license";
     const buy_and_upgrade = (
       <>
         <a
-          style={a_style}
+          style={A_STYLE}
           onClick={() => {
             redux.getActions("page").set_active_tab("account");
-            redux.getActions("account").set_active_tab("billing");
+            const account_actions = redux.getActions("account");
+            account_actions.set_show_purchase_form(true);
+            account_actions.set_active_tab("licenses");
           }}
         >
-          buy a subscription
+          <u>buy a license</u> (starting at about $3/month)
         </a>{" "}
-        and{" "}
-        <a
-          style={a_style}
-          onClick={() => {
-            redux.getProjectActions(project_id).set_active_tab("settings");
-          }}
-        >
-          apply upgrades
-        </a>
+        and then{" "}
+        <A style={A_STYLE} href={add_license}>
+          <u>apply it to this project</u>
+        </A>
       </>
     );
+    if (!allow_run) {
+      return (
+        <span>
+          {trial_project} - There are too many free trial projects running right
+          now. Try again later or {buy_and_upgrade}.
+        </span>
+      );
+    }
     if (host && internet) {
       return (
         <span>
-          {trial_project} – {buy_and_upgrade} or{" "}
-          {humanizeList([...no_host, no_internet])}
+          {trial_project} – {buy_and_upgrade}.
+          <br />
+          Otherwise, {humanizeList([...no_host, no_internet])}
           {"."}
         </span>
       );
     } else if (host) {
       return (
         <span>
-          {trial_project} – upgrade{" "}
-          <A href={memberquota} style={a_style}>
-            Member Hosting
+          {trial_project} – upgrade to{" "}
+          <A href={memberquota} style={A_STYLE}>
+            <u>Member Hosting</u>
           </A>{" "}
           or {humanizeList(no_host)}
           {"."}
@@ -111,8 +125,8 @@ export const TrialBanner: React.FC<Props> = React.memo(({ project_id }) => {
       return (
         <span>
           <strong>No internet access</strong> – upgrade{" "}
-          <A href={inetquota} style={a_style}>
-            Internet Access
+          <A href={inetquota} style={A_STYLE}>
+            <u>Internet Access</u>
           </A>{" "}
           or {no_internet}
           {"."}
@@ -122,14 +136,15 @@ export const TrialBanner: React.FC<Props> = React.memo(({ project_id }) => {
   }
 
   function render_learn_more(color): JSX.Element {
+    const style = {
+      ...A_STYLE,
+      ...{ fontWeight: "bold" as "bold", color: color },
+    };
     return (
       <>
         {" – "}
-        <A
-          href={trial_url}
-          style={{ fontWeight: "bold", color: color, cursor: "pointer" }}
-        >
-          more info
+        <A href={DOC_TRIAL} style={style}>
+          <u>more info</u>
         </A>
         {"..."}
       </>
@@ -163,27 +178,16 @@ export const TrialBanner: React.FC<Props> = React.memo(({ project_id }) => {
     return null;
   }
 
-  // we want this to be between 10 to 14 and growing over time (weeks)
-  const proj_created = project_map.getIn([project_id, "created"], new Date(0));
-
-  const min_fontsize = 10;
-  const age_ms: number = server_time().getTime() - proj_created.getTime();
-  const age_days = age_ms / (24 * 60 * 60 * 1000);
-  const font_size = Math.min(14, min_fontsize + age_days / 15);
-  const style: React.CSSProperties = {
+  const style = {
     padding: "5px 10px",
     marginBottom: 0,
-    fontSize: font_size + "pt",
+    fontSize: "12pt",
     borderRadius: 0,
-    marginTop: "-3px",
-  };
-  // turns red after about 1 month (2 * 15, see above)
-  if (host && font_size > min_fontsize + 2) {
-    style.color = "white";
-    style.background = "red";
-  }
+    color: "white",
+    background: "red",
+  } as CSS;
 
-  const mesg = message(host, internet, style.color);
+  const mesg = message(host, internet);
 
   return (
     <Alert bsStyle="warning" style={style}>

@@ -23,22 +23,21 @@ winston      = require('./winston-metrics').get_logger('hub_http_server')
 
 misc         = require('smc-util/misc')
 {defaults, required} = misc
-{DNS}        = require('smc-util/theme')
 misc_node    = require('smc-util-node/misc_node')
 hub_register = require('./hub_register')
 auth         = require('./auth')
 access       = require('./access')
 hub_projects = require('./projects')
 MetricsRecorder  = require('./metrics-recorder')
+{WebappConfiguration} = require('./webapp-configuration')
 
 {http_message_api_v1} = require('./api/handler')
 {setup_analytics_js} = require('./analytics')
 {have_active_registration_tokens} = require("./utils");
+{setup_healthchecks} = require('./healthchecks')
+manifest = require('./manifest')
 
 open_cocalc = require('./open-cocalc-server')
-
-# Rendering stripe invoice server side to PDF in memory
-{stripe_render_invoice} = require('./stripe/invoice')
 
 SMC_ROOT    = process.env.SMC_ROOT
 STATIC_PATH = path_module.join(SMC_ROOT, 'static')
@@ -49,6 +48,7 @@ exports.init_express_http_server = (opts) ->
     opts = defaults opts,
         base_url       : required
         dev            : false       # if true, serve additional dev stuff, e.g., a proxyserver.
+        is_personal       : false       # if true, includes that is in personal mode in customize info (so frontend can take this into account).
         database       : required
         compute_server : required
         cookie_options : undefined   # they're for the new behavior (legacy fallback implemented below)
@@ -64,6 +64,7 @@ exports.init_express_http_server = (opts) ->
     app    = express()
     http_server = http.createServer(app)
     app.use(cookieParser())
+    webapp_config = new WebappConfiguration(db:opts.database)
 
     # Enable compression, as
     # suggested by http://expressjs.com/en/advanced/best-practice-performance.html#use-gzip-compression
@@ -124,16 +125,21 @@ exports.init_express_http_server = (opts) ->
     # setup the /analytics.js endpoint
     setup_analytics_js(router, opts.database, winston, opts.base_url)
 
+    # setup all healthcheck endpoints
+    setup_healthchecks(router:router, db:opts.database)
+
+    # this is basically the "/" index page + assets, for docker, on-prem, dev, etc. calls itself "open cocalc"
     open_cocalc.setup_open_cocalc(app:app, router:router, db:opts.database, cacheLongTerm:cacheLongTerm, base_url:opts.base_url)
 
-    # The /static content
+    # The /static content, used by docker, development, etc.
     router.use '/static',
         express.static(STATIC_PATH, setHeaders: cacheLongTerm)
 
-    # This is webapp-lib/resources !
+    # This is webapp-lib/resources – cocalc serves everything it needs on its own. no info leaks, less dependency!
     router.use '/res',
         express.static(WEBAPP_RES_PATH, setHeaders: cacheLongTerm)
 
+    # docker and development needs this endpoint in addition to serving /static
     router.get '/app', (req, res) ->
         #res.cookie(opts.base_url + 'has_remember_me', 'true', { maxAge: 60*60*1000, httpOnly: false })
         res.sendFile(path_module.join(STATIC_PATH, 'app.html'), {maxAge: 0})
@@ -142,45 +148,15 @@ exports.init_express_http_server = (opts) ->
     router.get '/base_url.js', (req, res) ->
         res.send("window.app_base_url='#{opts.base_url}';")
 
-    # used by HAPROXY for testing that this hub is OK to receive traffic
-    router.get '/alive', (req, res) ->
-        if not hub_register.database_is_working()
-            # this will stop haproxy from routing traffic to us
-            # until db connection starts working again.
-            winston.debug("alive: answering *NO*")
-            res.status(404).end()
-        else
-            res.send('alive')
-
     router.get '/metrics', (req, res) ->
         res.header("Content-Type", "text/plain")
         res.header('Cache-Control', 'private, no-cache, no-store, must-revalidate')
         metricsRecorder = MetricsRecorder.get()
         if metricsRecorder?
             # res.send(JSON.stringify(opts.metricsRecorder.get(), null, 2))
-            res.send(metricsRecorder.metrics())
+            res.send(await metricsRecorder.metrics())
         else
             res.send(JSON.stringify(error:'Metrics recorder not initialized.'))
-
-    # /concurrent -- used by kubernetes to decide whether or not to kill the container; if
-    # below the warn thresh, returns number of concurrent connection; if hits warn, then
-    # returns 404 error, meaning hub may be unhealthy.  Kubernetes will try a few times before
-    # killing the container.  Will also return 404 if there is no working database connection.
-    router.get '/concurrent-warn', (req, res) ->
-        if not hub_register.database_is_working()
-            winston.debug("/concurrent-warn: not healthy, since database connection not working")
-            res.status(404).end()
-            return
-        c = opts.database.concurrent()
-        if c >= opts.database._concurrent_warn
-            winston.debug("/concurrent-warn: not healthy, since concurrent >= #{opts.database._concurrent_warn}")
-            res.status(404).end()
-            return
-        res.send("#{c}")
-
-    # Return number of concurrent connections (could be useful)
-    router.get '/concurrent', (req, res) ->
-        res.send("#{opts.database.concurrent()}")
 
     # HTTP API
     router.post '/api/v1/*', (req, res) ->
@@ -213,25 +189,9 @@ exports.init_express_http_server = (opts) ->
                     res.send(resp)
 
     # stripe invoices:  /invoice/[invoice_id].pdf
-    stripe_connections = require('./stripe/connect').get_stripe()
-    if stripe_connections?
-        router.get '/invoice/*', (req, res) ->
-            winston.debug("/invoice/* (hub --> client): #{misc.to_json(req.query)}, #{req.path}")
-            path = req.path.slice(req.path.lastIndexOf('/') + 1)
-            i = path.lastIndexOf('-')
-            if i != -1
-                path = path.slice(i+1)
-            i = path.lastIndexOf('.')
-            if i == -1
-                res.status(404).send("invoice must end in .pdf")
-                return
-            invoice_id = path.slice(0,i)
-            winston.debug("id='#{invoice_id}'")
-
-            stripe_render_invoice(stripe_connections, invoice_id, true, res)
-    else
-        router.get '/invoice/*', (req, res) ->
-            res.status(404).send("stripe not configured")
+    # Now deprecated, since stripe provides this as a service now!
+    router.get '/invoice/*', (req, res) ->
+        res.status(404).send("stripe invoice endpoint is deprecated")
 
     # return uuid-indexed blobs (mainly used for graphics)
     router.get '/blobs/*', (req, res) ->
@@ -282,6 +242,7 @@ exports.init_express_http_server = (opts) ->
 
     # Used to determine whether or not a token is needed for
     # the user to create an account.
+    # DEPRECATED: moved to /customize
     if server_settings?
         router.get '/registration', (req, res) ->
             if await have_active_registration_tokens(opts.database)
@@ -291,11 +252,29 @@ exports.init_express_http_server = (opts) ->
 
     if server_settings?
         router.get '/customize', (req, res) ->
-            if req.query.type == 'embed'
+            # if we're behind cloudflare, we expose the detected country in the client
+            # use a lib like https://github.com/michaelwittig/node-i18n-iso-countries
+            # to read the ISO 3166-1 Alpha 2 codes.
+            # if it is unknown, the code will be XX and K1 is the Tor-Network.
+            country = req.headers['cf-ipcountry'] ? 'XX'
+            host = req.headers["host"]
+            config = await webapp_config.get(host:host, country:country)
+            if opts.is_personal
+                config.configuration.is_personal = true
+            if req.query.type == 'full'
                 res.header("Content-Type", "text/javascript")
-                res.send("window.CUSTOMIZE = Object.freeze(#{JSON.stringify(server_settings.pub)})")
+                mapping = '{configuration:window.CUSTOMIZE, registration:window.REGISTER, strategies:window.STRATEGIES}'
+                res.send("(#{mapping} = Object.freeze(#{JSON.stringify(config)}))")
+            else if req.query.type == 'manifest'
+                manifest.send(res, config, opts.base_url)
             else
-                res.json(server_settings.pub)
+                # this is deprecated
+                if req.query.type == 'embed'
+                    res.header("Content-Type", "text/javascript")
+                    res.send("window.CUSTOMIZE = Object.freeze(#{JSON.stringify(config.configuration)})")
+                else
+                    # even more deprecated
+                    res.json(config)
 
     # Save other paths in # part of URL then redirect to the single page app.
     router.get ['/projects*', '/help*', '/settings*', '/admin*', '/dashboard*', '/notifications*'], (req, res) ->
@@ -327,8 +306,8 @@ exports.init_express_http_server = (opts) ->
 
     if opts.dev
         dev = require('./dev/hub-http-server')
-        await dev.init_http_proxy(app, opts.database, opts.base_url, opts.compute_server, winston)
-        dev.init_websocket_proxy(http_server, opts.database, opts.base_url, opts.compute_server, winston)
+        await dev.init_http_proxy(app, opts.database, opts.base_url, opts.compute_server, winston, opts.is_personal)
+        dev.init_websocket_proxy(http_server, opts.database, opts.base_url, opts.compute_server, winston, opts.is_personal)
         dev.init_share_server(app, opts.database, opts.base_url, winston);
 
     return {http_server:http_server, express_router:router}

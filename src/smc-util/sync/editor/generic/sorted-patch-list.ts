@@ -8,15 +8,10 @@ Sorted list of patches applied to a starting string/object.
 */
 
 import { EventEmitter } from "events";
-
 import { isEqual } from "underscore";
-
 import { Document, Patch } from "./types";
-
 import { patch_cmp } from "./util";
-
-import { cmp_Date, deep_copy, trunc_middle } from "../../../misc2";
-
+import { close, cmp_Date, deep_copy, trunc_middle } from "../../../misc";
 import { Entry, PatchValueCache } from "./patch-value-cache";
 
 // Make this bigger to make things faster... at the
@@ -44,12 +39,7 @@ export class SortedPatchList extends EventEmitter {
 
   public close(): void {
     this.removeAllListeners();
-    delete this.from_str;
-    delete this.patches;
-    delete this.times;
-    delete this.versions_cache;
-    delete this.cache;
-    delete this.all_snapshot_times;
+    close(this);
   }
 
   /* Choose the next available time in ms that is congruent to

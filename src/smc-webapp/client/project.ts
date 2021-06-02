@@ -7,19 +7,31 @@
 Functionality that mainly involves working with a specific project.
 */
 
-import { required, defaults } from "smc-util/misc";
 import {
   copy_without,
   encode_path,
   is_valid_uuid_string,
-} from "smc-util/misc2";
+  required,
+  defaults,
+  coerce_codomain_to_numbers,
+} from "smc-util/misc";
 import * as message from "smc-util/message";
 import { DirectoryListingEntry } from "smc-util/types";
 import { connection_to_project } from "../project/websocket/connect";
 import { API } from "../project/websocket/api";
 import { redux } from "../app-framework";
 import { WebappClient } from "./client";
-
+import {
+  allow_project_to_run,
+  too_many_free_projects,
+} from "../project/client-side-throttle";
+import { ProjectInfo, project_info } from "../project/websocket/project-info";
+import {
+  ProjectStatus,
+  project_status,
+} from "../project/websocket/project-status";
+import { UsageInfoWS, get_usage_info } from "../project/websocket/usage-info";
+import { ensure_project_running } from "../project/project-start-warning";
 import { Configuration, ConfigurationAspect } from "../project_configuration";
 
 export interface ExecOpts {
@@ -128,12 +140,38 @@ export class ProjectClient {
     member_host?: number;
     always_running?: number;
   }): Promise<void> {
-    await this.call(message.project_set_quotas(opts));
+    // we do some extra work to ensure all the quotas are numbers (typescript isn't
+    // enough; sometimes client code provides strings, which can cause lots of trouble).
+    const x = coerce_codomain_to_numbers(copy_without(opts, ["project_id"]));
+    await this.call(
+      message.project_set_quotas({ ...x, ...{ project_id: opts.project_id } })
+    );
   }
 
   public async websocket(project_id: string): Promise<any> {
-    const group = redux.getStore("projects").get_my_group(project_id);
-    if (group == null || group === "public") {
+    const store = redux.getStore("projects");
+    // Wait until project is running (or admin and not on project)
+    await store.async_wait({
+      until: () => {
+        const state = store.get_state(project_id);
+        if (state == null && redux.getStore("account")?.get("is_admin")) {
+          // is admin so doesn't know project state -- just immediately
+          // try, which  will cause project to run
+          return true;
+        }
+        return state == "running";
+      },
+    });
+
+    // get_my_group returns undefined when the various info to
+    // determine this isn't yet loaded.  For some connections
+    // this websocket function gets called before that info is
+    // loaded, which can cause trouble.
+    let group: string | undefined;
+    await store.async_wait({
+      until: () => (group = store.get_my_group(project_id)) != null,
+    });
+    if (group == "public") {
       throw Error("no access to project websocket");
     }
     return await connection_to_project(project_id);
@@ -172,6 +210,20 @@ export class ProjectClient {
       env: undefined,
       cb: undefined, // if given use a callback interface instead of async
     });
+
+    if (
+      !(await ensure_project_running(
+        opts.project_id,
+        `execute the command ${opts.command}`
+      ))
+    ) {
+      return {
+        stdout: "",
+        stderr: "You must start the project first",
+        exit_code: 1,
+        time: 0,
+      };
+    }
 
     try {
       const ws = await this.websocket(opts.project_id);
@@ -338,9 +390,18 @@ export class ProjectClient {
   }
 
   public async touch(project_id: string): Promise<void> {
-    if (!this.client.is_signed_in()) {
-      // silently ignore if not signed in
-      return;
+    const state = redux.getStore("projects")?.get_state(project_id);
+    if (!(state == null && redux.getStore("account")?.get("is_admin"))) {
+      // not trying to view project as admin so do some checks
+      if (!allow_project_to_run(project_id)) return;
+      if (!this.client.is_signed_in()) {
+        // silently ignore if not signed in
+        return;
+      }
+      if (state != "running") {
+        // not running so don't touch (user must explicitly start first)
+        return;
+      }
     }
 
     // Throttle -- so if this function is called with the same project_id
@@ -398,7 +459,12 @@ export class ProjectClient {
     description: string;
     image?: string;
     start?: boolean;
+    license?: string; // "license_id1,license_id2,..." -- if given, create project with these licenses applied
   }): Promise<string> {
+    if (opts.start && too_many_free_projects()) {
+      // don't auto-start it if too many projects already running.
+      opts.start = false;
+    }
     const { project_id } = await this.client.async_call({
       allow_post: false, // since gets called for anonymous and cookie not yet set.
       message: message.create_project(opts),
@@ -423,5 +489,36 @@ export class ProjectClient {
     path: string;
   }): Promise<string> {
     return (await this.api(opts.project_id)).realpath(opts.path);
+  }
+
+  // Add and remove a license from a project.  Note that these
+  // might not be used to implement anything in the client frontend, but
+  // are used via the API, and this is a convenient way to test them.
+  public async add_license_to_project(
+    project_id: string,
+    license_id: string
+  ): Promise<void> {
+    await this.call(message.add_license_to_project({ project_id, license_id }));
+  }
+
+  public async remove_license_from_project(
+    project_id: string,
+    license_id: string
+  ): Promise<void> {
+    await this.call(
+      message.remove_license_from_project({ project_id, license_id })
+    );
+  }
+
+  public project_info(project_id: string): ProjectInfo {
+    return project_info(this.client, project_id);
+  }
+
+  public project_status(project_id: string): ProjectStatus {
+    return project_status(this.client, project_id);
+  }
+
+  public usage_info(project_id: string): UsageInfoWS {
+    return get_usage_info(project_id);
   }
 }

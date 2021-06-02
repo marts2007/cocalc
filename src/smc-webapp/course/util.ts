@@ -4,16 +4,20 @@
  */
 
 import { Map } from "immutable";
-import { TypedMap } from "../app-framework/TypedMap";
+import { TypedMap } from "../app-framework";
 import { StudentsMap } from "./store";
 import { AssignmentCopyStep } from "./types";
-import { separate_file_extension } from "smc-util/misc2";
+import {
+  defaults,
+  required,
+  search_match,
+  search_split,
+  separate_file_extension,
+  merge,
+  cmp,
+} from "smc-util/misc";
 
 // Pure functions used in the course manager
-
-// CoCalc libraries
-import * as misc from "smc-util/misc";
-const { defaults, required } = misc;
 
 export function STEPS(peer: boolean): AssignmentCopyStep[] {
   if (peer) {
@@ -103,7 +107,7 @@ export function step_ready(step: AssignmentCopyStep, n) {
 //    first_name    : string
 //    last_name     : string
 //    last_active   : integer
-//    hosting       : bool
+//    hosting       : string
 //    email_address : string
 // }
 export function parse_students(student_map: StudentsMap, user_map, redux) {
@@ -124,15 +128,11 @@ export function parse_students(student_map: StudentsMap, user_map, redux) {
           if (last_active != null) {
             x.last_active = last_active.get(x.account_id);
           }
-          const upgrades = projects_store.get_total_project_quotas(
-            x.project_id
-          );
-          if (upgrades != null) {
-            x.hosting = upgrades.member_host;
-          }
         }
       }
     }
+    const { description, state } = projectStatus(x.project_id, redux);
+    x.hosting = description + state;
 
     if (x.first_name == null) {
       x.first_name = "";
@@ -142,9 +142,6 @@ export function parse_students(student_map: StudentsMap, user_map, redux) {
     }
     if (x.last_active == null) {
       x.last_active = 0;
-    }
-    if (x.hosting == null) {
-      x.hosting = false;
     }
     if (x.email_address == null) {
       x.email_address = "";
@@ -171,47 +168,34 @@ export function immutable_to_list(x: any, primary_key?): any {
     return;
   }
   const v: any[] = [];
-  x.map((val, key) => v.push(misc.merge(val.toJS(), { [primary_key]: key })));
+  x.map((val, key) => v.push(merge(val.toJS(), { [primary_key]: key })));
   return v;
 }
 
 // Returns a list of matched objects and the number of objects
 // which were in the original list but omitted in the returned list
-export function compute_match_list(opts) {
+export function compute_match_list(opts: {
+  list: any[];
+  search_key: string;
+  search: string;
+}) {
   opts = defaults(opts, {
     list: required, // list of objects<M>
     search_key: required, // M.search_key property to match over
     search: required, // matches to M.search_key
-    ignore_case: true,
   });
-  let { list, search, search_key, ignore_case } = opts;
+  let { list, search, search_key } = opts;
   if (!search) {
     // why are you even calling this..
     return { list, num_omitted: 0 };
   }
 
-  let num_omitted = 0;
-  const words = misc.split(search);
-  const matches = (x) => {
-    let k;
-    if (ignore_case) {
-      k =
-        typeof x[search_key].toLowerCase === "function"
-          ? x[search_key].toLowerCase()
-          : undefined;
-    } else {
-      k = x[search_key];
-    }
-    for (const w of words) {
-      if (k.indexOf(w) === -1) {
-        // no match
-        num_omitted += 1;
-        return false;
-      }
-    }
-    return true;
-  };
+  const words = search_split(search);
+  const matches = (x) =>
+    search_match(x[search_key]?.toLowerCase?.() ?? "", words);
+  const n = list.length;
   list = list.filter(matches);
+  const num_omitted = n - list.length;
   return { list, num_omitted };
 }
 
@@ -221,7 +205,7 @@ export function compute_match_list(opts) {
 // deleted is not included by default
 export function order_list<T extends { deleted: boolean }>(opts: {
   list: T[];
-  compare_function: (a: T, b: T) => 1 | -1 | 0;
+  compare_function: (a: T, b: T) => number;
   reverse: boolean;
   include_deleted: boolean;
 }) {
@@ -251,10 +235,10 @@ export function order_list<T extends { deleted: boolean }>(opts: {
 }
 
 const sort_on_string_field = (field) => (a, b) =>
-  misc.cmp(a[field].toLowerCase(), b[field].toLowerCase());
+  cmp(a[field].toLowerCase(), b[field].toLowerCase());
 
 const sort_on_numerical_field = (field) => (a, b) =>
-  misc.cmp(a[field] * -1, b[field] * -1);
+  cmp(a[field] * -1, b[field] * -1);
 
 export enum StudentField {
   email = "email",
@@ -277,7 +261,7 @@ export function pick_student_sorter<T extends { column_name: StudentField }>(
     case "last_active":
       return sort_on_numerical_field("last_active");
     case "hosting":
-      return sort_on_numerical_field("hosting");
+      return sort_on_string_field("hosting");
   }
 }
 
@@ -291,4 +275,47 @@ export function assignment_identifier(
 export function autograded_filename(filename: string): string {
   const { name, ext } = separate_file_extension(filename);
   return name + "_autograded." + ext;
+}
+
+export function projectStatus(
+  project_id: string | undefined,
+  redux
+): { description: string; icon: string; state: string; tip?: string } {
+  if (!project_id) {
+    return { description: "(not created)", icon: "checkbox", state: "" };
+  }
+  const store = redux.getStore("projects");
+  const upgrades = store.get_total_project_quotas(project_id);
+  if (upgrades == null) {
+    // user opening the course, but isn't a collaborator on
+    // this student project for some reason.  This will get fixed
+    // when configure all projects runs.
+    return { description: "(not available)", icon: "question", state: "" };
+  }
+  const state = ` (${store.get_state(project_id)})`;
+  if (upgrades.member_host) {
+    return {
+      icon: "check",
+      description: "Members-only hosting",
+      tip:
+        "Projects is on a members-only server, which is much more robust and has priority support.",
+      state,
+    };
+  }
+  const licenses = store.get_site_license_ids(project_id);
+  if (licenses.length > 0) {
+    return {
+      description: "Licensed",
+      icon: "check",
+      state,
+      tip: "Project is properly licensed and should work well. Thank you!",
+    };
+  }
+  return {
+    description: "Free Trial",
+    icon: "exclamation-triangle",
+    state,
+    tip:
+      "Project is a trial project hosted on a free server, so it may be overloaded and will be rebooted frequently.  Please upgrade in course configuration.",
+  };
 }

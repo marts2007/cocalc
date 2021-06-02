@@ -12,35 +12,46 @@ export const STUDENT_SUBDIR = "student";
 
 // default timeout of 1 minute per cell
 export const NBGRADER_CELL_TIMEOUT_MS: number = 60 * 1000;
-
-// default timeout of 10 minutes for whole notebooks
+// default timeout of 10 minutes for whole notebook
 export const NBGRADER_TIMEOUT_MS: number = 10 * 60 * 1000;
+
+// default max output of 1 million characters per cell
+export const NBGRADER_MAX_OUTPUT_PER_CELL: number = 500000;
+// default max output of 4 million characters for whole notebook
+export const NBGRADER_MAX_OUTPUT: number = 4000000;
 
 import { Map } from "immutable";
 
-import { CourseActions, PARALLEL_LIMIT } from "../actions";
+import { CourseActions } from "../actions";
 import {
   AssignmentRecord,
   CourseStore,
-  Feedback,
   NBgraderRunInfo,
   get_nbgrader_score,
 } from "../store";
-import { start_project, exec } from "../../frame-editors/generic/client";
+import {
+  start_project,
+  stop_project,
+  exec,
+} from "../../frame-editors/generic/client";
 import { webapp_client } from "../../webapp-client";
 import { redux } from "../../app-framework";
 import {
   len,
+  endswith,
   path_split,
   uuid,
   peer_grading,
   mswalltime,
   defaults,
   split,
+  trunc,
 } from "smc-util/misc";
 import { map } from "awaiting";
 
 import { nbgrader, jupyter_strip_notebook } from "../../jupyter/nbgrader/api";
+import { grading_state } from "../nbgrader/util";
+import { ipynb_clear_hidden_tests } from "../../jupyter/nbgrader/clear-hidden-tests";
 import {
   extract_auto_scores,
   NotebookScores,
@@ -144,80 +155,14 @@ export class AssignmentsActions {
     this.course_actions.setState({ active_feedback_edits });
   }
 
-  public update_edited_feedback(
-    assignment_id: string,
-    student_id: string,
-    new_edited_grade?: string,
-    new_edited_comments?: string
-  ) {
+  public update_edited_feedback(assignment_id: string, student_id: string) {
     const store = this.get_store();
     const key = assignment_identifier(assignment_id, student_id);
-    const current_edited_feedback = store.get("active_feedback_edits").get(key);
-
-    let current_edited_grade: string | undefined;
-    let current_edited_comments: string | undefined;
-
-    if (current_edited_feedback) {
-      current_edited_grade = current_edited_feedback.get("edited_grade");
-      current_edited_comments = current_edited_feedback.get("edited_comments");
-    }
-
-    let grade: string;
-    if (new_edited_grade != undefined) {
-      grade = new_edited_grade;
-    } else if (current_edited_grade != undefined) {
-      grade = current_edited_grade;
-    } else {
-      grade = store.get_grade(assignment_id, student_id) || "";
-    }
-
-    let comments: string;
-    if (new_edited_comments != undefined) {
-      comments = new_edited_comments;
-    } else if (current_edited_comments != undefined) {
-      comments = current_edited_comments;
-    } else {
-      comments = store.get_comments(assignment_id, student_id) || "";
-    }
     const old_edited_feedback = store.get("active_feedback_edits");
-    const new_edited_feedback = old_edited_feedback.set(
-      key,
-      new Feedback({ edited_grade: grade, edited_comments: comments })
-    );
+    const new_edited_feedback = old_edited_feedback.set(key, true);
     this.course_actions.setState({
       active_feedback_edits: new_edited_feedback,
     });
-  }
-
-  public save_feedback(assignment_id: string, student_id: string): void {
-    const store = this.get_store();
-    const active_feedback_edits = store.get("active_feedback_edits");
-    if (active_feedback_edits == undefined) {
-      return;
-    }
-    const key = assignment_identifier(assignment_id, student_id);
-    const edited_feedback = active_feedback_edits.get(key);
-    if (edited_feedback == undefined) {
-      return;
-    }
-    const query = {
-      table: "assignments",
-      assignment_id,
-    };
-    const assignment_data = this.course_actions.get_one(query);
-    if (assignment_data == null) {
-      // assignment suddenly doesn't exist...
-      return;
-    }
-
-    const grades = assignment_data.grades || {};
-    grades[student_id] = edited_feedback.get("edited_grade");
-
-    const comments = assignment_data.comments || {};
-    comments[student_id] = edited_feedback.get("edited_comments");
-    const feedback_changes = Object.assign({ grades, comments }, query);
-    this.course_actions.set(feedback_changes);
-    this.clear_edited_feedback(assignment_id, student_id);
   }
 
   // Set a specific grade for a student in an assignment.
@@ -247,6 +192,35 @@ export class AssignmentsActions {
         table: "assignments",
         assignment_id,
         grades,
+      },
+      commit
+    );
+  }
+
+  // Set a specific comment for a student in an assignment.
+  public set_comment(
+    assignment_id: string,
+    student_id: string,
+    comment: string,
+    commit: boolean = true
+  ): void {
+    const { assignment } = this.course_actions.resolve({
+      assignment_id,
+    });
+    if (assignment == null) {
+      throw Error("no such assignment");
+    }
+    // Annoying that we have to convert to JS here and cast,
+    // but the set below seems to require it.
+    let comments = assignment.get("comments", Map()).toJS() as {
+      [student_id: string]: string;
+    };
+    comments[student_id] = comment;
+    this.course_actions.set(
+      {
+        table: "assignments",
+        assignment_id,
+        comments,
       },
       commit
     );
@@ -486,6 +460,7 @@ You can find the comments they made in the folders below.\
       assignment_id,
       student_id
     );
+    const nbgrader_score_ids = store.get_nbgrader_score_ids(assignment_id);
     if (nbgrader_scores) {
       const { score, points, error } = get_nbgrader_score(nbgrader_scores);
       const summary = error ? "error" : `${score}/${points}`;
@@ -498,9 +473,17 @@ You can find the comments they made in the folders below.\
           details += `ERROR: ${s}\n\n`;
         } else {
           details += `| Problem   | Score     |\n|:----------|:----------|\n`;
+          const ids: string[] = nbgrader_score_ids?.[filename] ?? [];
           for (const id in s) {
-            const t = `${s[id].score}`;
-            details += `| ${id.padEnd(10)}| ${t.padEnd(10)}|\n`;
+            if (!ids.includes(id)) {
+              ids.push(id);
+            }
+          }
+          for (const id of ids) {
+            if (s[id] != null) {
+              const t = `${s[id]?.score ?? 0}`;
+              details += `| ${id.padEnd(10)}| ${t.padEnd(10)}|\n`;
+            }
           }
         }
       }
@@ -605,7 +588,11 @@ ${details}
       }
     };
 
-    await map(store.get_student_ids({ deleted: false }), PARALLEL_LIMIT, f);
+    await map(
+      store.get_student_ids({ deleted: false }),
+      store.get_copy_parallel(),
+      f
+    );
     if (errors) {
       finish(errors);
     } else {
@@ -704,6 +691,17 @@ ${details}
       overwrite: false,
       create_due_date_file: false,
     });
+    const { student, assignment, store } = this.course_actions.resolve({
+      student_id,
+      assignment_id,
+    });
+    if (!student || !assignment) return;
+    if (assignment.get("nbgrader") && !assignment.get("has_student_subdir")) {
+      this.course_actions.set_error(
+        "Assignment contains Jupyter notebooks with nbgrader metadata but there is no student/ subdirectory. The student/ subdirectory gets created when you generate the student version of the assignment.  Please generate the student versions of your notebooks (open the notebook, then View --> nbgrader), or remove any nbgrader metadata from them."
+      );
+      return;
+    }
 
     if (this.start_copy(assignment_id, student_id, "last_assignment")) {
       return;
@@ -718,13 +716,6 @@ ${details}
         this.course_actions.set_error(`copy to student: ${err}`);
       }
     };
-
-    const { student, assignment, store } = this.course_actions.resolve({
-      student_id,
-      assignment_id,
-      finish,
-    });
-    if (!student || !assignment) return;
 
     const student_name = store.get_student_name(student_id);
     this.course_actions.set_activity({
@@ -905,6 +896,13 @@ ${details}
       desc += " who have not already received their copy";
     }
     const short_desc = "copy to student for peer grading";
+    // CRITICAL: be sure to run this update once before doing the
+    // assignment.  Otherwise, since assignment runs more than once
+    // in parallel, two will launch at about the same time and
+    // the *condition* to know if it is done depends on the store,
+    // which defers when it gets updated.  Anyway, this line is critical:
+    this.update_peer_assignment(assignment_id);
+    // OK, now do the assignment... in parallel.
     await this.assignment_action_all_students(
       assignment_id,
       new_only,
@@ -984,7 +982,11 @@ ${details}
       }
     };
 
-    await map(store.get_student_ids({ deleted: false }), PARALLEL_LIMIT, f);
+    await map(
+      store.get_student_ids({ deleted: false }),
+      store.get_copy_parallel(),
+      f
+    );
 
     if (errors) {
       finish(errors);
@@ -1034,7 +1036,8 @@ ${details}
 
     const peers = peer_map[student.get("student_id")];
     if (peers == null) {
-      // empty peer assignment for this student (maybe student added after peer assignment already created?)
+      // empty peer assignment for this student (maybe student added after
+      // peer assignment already created?)
       finish();
       return;
     }
@@ -1056,13 +1059,13 @@ ${details}
       assignment.get("collect_path") + "/GRADING-GUIDE.md";
 
     const target_base_path = assignment.get("path") + "-peer-grade";
-    const f = async (student_id: string): Promise<void> => {
+    const f = async (peer_student_id: string) => {
       if (this.course_actions.is_closed()) return;
-      const src_path = assignment.get("collect_path") + "/" + student_id;
-      const target_path = target_base_path + "/" + student_id;
+      const src_path = assignment.get("collect_path") + "/" + peer_student_id;
+      const target_path = target_base_path + "/" + peer_student_id;
       // delete the student's name so that grading is anonymous; also, remove original
       // due date to avoid confusion.
-      const name = store.get_student_name_extra(student_id);
+      const name = store.get_student_name_extra(peer_student_id);
       await webapp_client.project_client.exec({
         project_id: store.get("course_project_id"),
         command: "rm",
@@ -1101,7 +1104,7 @@ ${details}
         target_path: target_base_path + "/GRADING-GUIDE.md",
       });
       // now copy actual stuff to grade
-      await map(peers, PARALLEL_LIMIT, f);
+      await map(peers, store.get_copy_parallel(), f);
       finish();
     } catch (err) {
       finish(err);
@@ -1189,7 +1192,7 @@ ${details}
     };
 
     try {
-      await map(peers, PARALLEL_LIMIT, f);
+      await map(peers, store.get_copy_parallel(), f);
       finish();
     } catch (err) {
       finish(err);
@@ -1311,9 +1314,7 @@ ${details}
         break;
       }
     }
-    const nbgrader = has_student_subdir
-      ? await this.probably_uses_nbgrader(assignment, project_id)
-      : false;
+    const nbgrader = await this.has_nbgrader_metadata(assignment_id);
     if (this.course_actions.is_closed()) return;
     this.course_actions.set({
       has_student_subdir,
@@ -1323,111 +1324,108 @@ ${details}
     });
   }
 
-  private async probably_uses_nbgrader(
-    assignment: AssignmentRecord,
-    project_id: string
-  ): Promise<boolean> {
-    // Heuristic: we check if there is an ipynb file in the STUDENT_SUBDIR
-    // that contains "nbgrader".
-    const path = this.assignment_src_path(assignment);
-    const command = "grep nbgrader *.ipynb | wc -l";
-    const cnt = parseInt(
-      (
-        await exec({
-          project_id,
-          command,
-          path,
-          err_on_exit: true,
-        })
-      ).stdout
-    );
-    return cnt > 0;
+  /* Scan all Jupyter notebooks in the top level of either the assignment directory or
+     the student/
+     subdirectory of it for cells with nbgrader metadata.  If any are found, return
+     true; otherwise, return false.
+  */
+  private async has_nbgrader_metadata(assignment_id: string): Promise<boolean> {
+    return len(await this.nbgrader_instructor_ipynb_files(assignment_id)) > 0;
   }
 
   // Read in the (stripped) contents of all nbgrader instructor ipynb
   // files for this assignment.  These are:
-  //  - Nothing if has_student_subdir isn't set.
-  //  - Every ipynb in the assignment directory that contains
-  //    the string 'nbgrader'.
-  //  - Exception if any ipynb file that is mangled, i.e., JSON.parse fails...
-  public async nbgrader_instructor_ipynb_files(
+  //  - Every ipynb file in the assignment directory that has a cell that
+  //    contains nbgrader metadata (and isn't mangled).
+  private async nbgrader_instructor_ipynb_files(
     assignment_id: string
   ): Promise<{ [path: string]: string }> {
     const { store, assignment } = this.course_actions.resolve({
       assignment_id,
     });
-    if (assignment == null || !assignment.get("has_student_subdir")) {
+    if (assignment == null) {
       return {}; // nothing case.
     }
     const path = assignment.get("path");
     const project_id = store.get("course_project_id");
-    const command = "ls";
-    // The F options make it so we won't get tricked by a directory
-    // whose name ends in .ipynb
-    const args = ["--color=never", "-1F"];
-    const files: string[] = (
-      await exec({
-        project_id,
-        path,
-        command,
-        args,
-      })
-    ).stdout.split("\n");
-
-    const to_read: string[] = [];
-    for (const file of files) {
-      if (file.endsWith(".ipynb")) {
-        to_read.push(file);
-      }
-    }
-
+    const files = await redux
+      .getProjectStore(project_id)
+      .get_listings()
+      .get_listing_directly(path);
     const result: { [path: string]: string } = {};
+
+    if (this.course_actions.is_closed()) return result;
+
+    const to_read = files
+      .filter((entry) => !entry.isdir && endswith(entry.name, ".ipynb"))
+      .map((entry) => entry.name);
 
     const f: (file: string) => Promise<void> = async (file) => {
       if (this.course_actions.is_closed()) return;
       const fullpath = path != "" ? path + "/" + file : file;
-      const content = await jupyter_strip_notebook(project_id, fullpath);
-      if (content.indexOf("nbgrader") != -1) {
-        result[file] = content;
+      try {
+        const content = await jupyter_strip_notebook(project_id, fullpath);
+        const { cells } = JSON.parse(content);
+        for (const cell of cells) {
+          if (cell.metadata.nbgrader) {
+            result[file] = content;
+            return;
+          }
+        }
+      } catch (err) {
+        return;
       }
     };
 
-    await map(to_read, PARALLEL_LIMIT, f);
+    await map(to_read, 10, f);
     return result;
   }
 
   // Run nbgrader for all students for which this assignment
   // has been collected at least once.
   public async run_nbgrader_for_all_students(
-    assignment_id: string
+    assignment_id: string,
+    ungraded_only?: boolean
   ): Promise<void> {
     // console.log("run_nbgrader_for_all_students", assignment_id);
     const instructor_ipynb_files = await this.nbgrader_instructor_ipynb_files(
       assignment_id
     );
     if (this.course_actions.is_closed()) return;
+    const store = this.get_store();
+    const nbgrader_scores = store.getIn([
+      "assignments",
+      assignment_id,
+      "nbgrader_scores",
+    ]);
     const one_student: (student_id: string) => Promise<void> = async (
       student_id
     ) => {
       if (this.course_actions.is_closed()) return;
-      const store = this.get_store();
       if (!store.last_copied("collect", assignment_id, student_id, true)) {
         // Do not try to grade the assignment, since it wasn't
-        // already successfully collected.
+        // already successfully collected yet.
+        return;
+      }
+      if (
+        ungraded_only &&
+        grading_state(student_id, nbgrader_scores) == "succeeded"
+      ) {
+        // Do not try to grade assignment, if it has already been successfully graded.
         return;
       }
       await this.run_nbgrader_for_one_student(
         assignment_id,
         student_id,
         instructor_ipynb_files,
-        false
+        true
       );
     };
     try {
       this.nbgrader_set_is_running(assignment_id);
       await map(
         this.get_store().get_student_ids({ deleted: false }),
-        PARALLEL_LIMIT,
+        this.get_store().get_nbgrader_parallel(),
         one_student
       );
       this.course_actions.syncdb.commit();
@@ -1440,6 +1438,9 @@ ${details}
     assignment_id: string,
     student_id: string,
     scores: { [filename: string]: NotebookScores | string },
+    nbgrader_score_ids:
+      | { [filename: string]: string[] }
+      | undefined = undefined,
     commit: boolean = true
   ): void {
     const assignment_data = this.course_actions.get_one({
@@ -1456,6 +1457,7 @@ ${details}
         table: "assignments",
         assignment_id,
         nbgrader_scores,
+        ...(nbgrader_score_ids != null ? { nbgrader_score_ids } : undefined),
       },
       commit
     );
@@ -1503,6 +1505,7 @@ ${details}
       assignment_id,
       student_id,
       scores,
+      undefined,
       commit
     );
 
@@ -1565,20 +1568,33 @@ ${details}
       return; // nothing case.
     }
 
-    const nbgrader_grade_in_instructor_project: boolean = !!store.getIn([
+    const nbgrader_grade_project: string | undefined = store.getIn([
       "settings",
-      "nbgrader_grade_in_instructor_project",
+      "nbgrader_grade_project",
+    ]);
+
+    const nbgrader_include_hidden_tests: boolean = !!store.getIn([
+      "settings",
+      "nbgrader_include_hidden_tests",
     ]);
 
     const course_project_id = store.get("course_project_id");
+    const student_project_id = student.get("project_id");
 
     let grade_project_id: string;
-    let where_grade: string;
-    if (nbgrader_grade_in_instructor_project) {
-      grade_project_id = course_project_id;
-      where_grade = "instructor project";
+    let student_path: string;
+    let stop_student_project = false;
+    if (nbgrader_grade_project) {
+      grade_project_id = nbgrader_grade_project;
+
+      // grade in the path where we collected their work.
+      student_path =
+        assignment.get("collect_path") + "/" + student.get("student_id");
+
+      this.course_actions.configuration.configure_nbgrader_grade_project(
+        grade_project_id
+      );
     } else {
-      const student_project_id = student.get("project_id");
       if (student_project_id == null) {
         // This would happen if maybe instructor deletes student project at
         // the exact wrong time.
@@ -1586,8 +1602,16 @@ ${details}
         throw Error("student has no project, so can't run nbgrader");
       }
       grade_project_id = student_project_id;
-      where_grade = "student's project";
+      // grade right where student did their work.
+      student_path = assignment.get("target_path");
     }
+
+    const where_grade =
+      redux.getStore("projects").get_title(grade_project_id) ?? "a project";
+
+    const project_name = nbgrader_grade_project
+      ? `project ${trunc(where_grade, 40)}`
+      : `${store.get_student_name(student_id)}'s project`;
 
     if (instructor_ipynb_files == null) {
       instructor_ipynb_files = await this.nbgrader_instructor_ipynb_files(
@@ -1605,7 +1629,6 @@ ${details}
       return; // nothing to do
     }
 
-    const student_path = assignment.get("target_path");
     const result: { [path: string]: any } = {};
     const scores: { [filename: string]: NotebookScores | string } = {};
 
@@ -1613,13 +1636,14 @@ ${details}
       const activity_id = this.course_actions.set_activity({
         desc: `Running nbgrader on ${store.get_student_name(
           student_id
-        )}'s "${file}" in ${where_grade}`,
+        )}'s "${file}" in '${trunc(where_grade, 40)}'`,
       });
       if (assignment == null || student == null) {
         // This won't happen, but it makes Typescript happy.
         return;
       }
       try {
+        // fullpath = where their collected work is.
         const fullpath =
           assignment.get("collect_path") +
           "/" +
@@ -1633,36 +1657,85 @@ ${details}
         if (instructor_ipynb_files == null) throw Error("BUG");
         const instructor_ipynb: string = instructor_ipynb_files[file];
         if (this.course_actions.is_closed()) return;
+
         const id = this.course_actions.set_activity({
-          desc: `Ensuring ${store.get_student_name(
-            student_id
-          )}'s project is running`,
+          desc: `Ensuring ${project_name} is running`,
         });
+
         try {
-          await start_project(grade_project_id, 60);
+          const did_start = await start_project(grade_project_id, 60);
+          // if *we* started the student project, we'll also stop it afterwards
+          if (!nbgrader_grade_project) {
+            stop_student_project = did_start;
+          }
         } finally {
           this.course_actions.clear_activity(id);
         }
-        const r = await nbgrader({
+
+        if (
+          grade_project_id != course_project_id &&
+          grade_project_id != student_project_id
+        ) {
+          // Make a fresh copy of the assignment files to the grade project.
+          // This is necessary because grading the assignment may depend on
+          // data files that are sent as part of the assignment.  Also,
+          // student's might have some code in text files next to the ipynb.
+          await webapp_client.project_client.copy_path_between_projects({
+            src_project_id: course_project_id,
+            src_path: student_path,
+            target_project_id: grade_project_id,
+            target_path: student_path,
+            overwrite_newer: true,
+            delete_missing: true,
+            backup: false,
+          });
+        }
+
+        const opts = {
           timeout_ms: store.getIn(
             ["settings", "nbgrader_timeout_ms"],
             NBGRADER_TIMEOUT_MS
-          ), // default timeout for total notebook
+          ),
           cell_timeout_ms: store.getIn(
             ["settings", "nbgrader_cell_timeout_ms"],
             NBGRADER_CELL_TIMEOUT_MS
-          ), // per cell timeout
+          ),
+          max_output: store.getIn(
+            ["settings", "nbgrader_max_output"],
+            NBGRADER_MAX_OUTPUT
+          ),
+          max_output_per_cell: store.getIn(
+            ["settings", "nbgrader_max_output_per_cell"],
+            NBGRADER_MAX_OUTPUT_PER_CELL
+          ),
           student_ipynb,
           instructor_ipynb,
           path: student_path,
           project_id: grade_project_id,
-        });
-        /* console.log("nbgrader finished successfully", {
+        };
+        /*console.log(
           student_id,
           file,
-          r
-        }); */
+          "about to launch autograding with input ",
+          opts
+        );*/
+        const r = await nbgrader(opts);
+        /* console.log(student_id, "autograding finished successfully", {
+          file,
+          r,
+        });*/
         result[file] = r;
+
+        if (!nbgrader_grade_project && stop_student_project) {
+          const idstop = this.course_actions.set_activity({
+            desc: `Stopping project ${project_name} after grading.`,
+          });
+          try {
+            await stop_project(grade_project_id, 60);
+          } finally {
+            this.course_actions.clear_activity(idstop);
+          }
+        }
       } catch (err) {
         // console.log("nbgrader failed", { student_id, file, err });
         scores[file] = `${err}`;
@@ -1693,22 +1766,19 @@ ${details}
     // preserve any manually entered scores, rather than overwrite them.
     const prev_scores = store.get_nbgrader_scores(assignment_id, student_id);
 
+    const nbgrader_score_ids: { [filename: string]: string[] } = {};
+
     for (const filename in result) {
       const r = result[filename];
       if (r == null) continue;
       if (r.output == null) continue;
+      if (r.ids != null) {
+        nbgrader_score_ids[filename] = r.ids;
+      }
 
       // Depending on instructor options, write the graded version of
       // the notebook to disk, so the student can see why their grade
       // is what it is:
-
-      await this.write_autograded_notebook(
-        assignment,
-        student_id,
-        filename,
-        r.output
-      );
-
       const notebook = JSON.parse(r.output);
       scores[filename] = extract_auto_scores(notebook);
       if (
@@ -1724,12 +1794,26 @@ ${details}
           }
         }
       }
+
+      if (!nbgrader_include_hidden_tests) {
+        // IMPORTANT: this *must* happen after extracting scores above!
+        // Otherwise students get perfect grades.
+        ipynb_clear_hidden_tests(notebook);
+      }
+
+      await this.write_autograded_notebook(
+        assignment,
+        student_id,
+        filename,
+        JSON.stringify(notebook, undefined, 2)
+      );
     }
 
     this.set_nbgrader_scores_for_one_student(
       assignment_id,
       student_id,
       scores,
+      nbgrader_score_ids,
       commit
     );
   }

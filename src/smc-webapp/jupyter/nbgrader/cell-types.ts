@@ -5,7 +5,7 @@
 
 import { Metadata } from "./types";
 
-type Language = "python" | "julia" | "r" | "sage";
+type Language = "python" | "julia" | "r" | "sage" | "octave";
 
 // I think the default points in official nbgrader is 0, but I find that very confusing
 // and it forces you to think.  Since partial credit with autograder doesn't exist, just
@@ -27,8 +27,10 @@ interface CelltypeInfo {
   points?: number; // default number of points
   icon?: string; // icon that would make sense for this type of cell
   code_only?: boolean; // only code cells can be set to this type
+  multiple_choice?: boolean; // either a markdown question or an answer cell for testing
   markdown_only?: boolean; // only markdown cells can be set to this type
   template?: { [language in Language]?: string } | string;
+  cell_type?: "code" | "markdown"; // if set, it switches the cell type
 }
 
 const PY_TEST = `
@@ -162,6 +164,51 @@ function foo(a, b)
     ### END SOLUTION
 end`;
 
+const OCTAVE_TEST = `
+# [Modify the tests below for your own problem]
+# Check that squares returns the correct output for several inputs:
+assert(squares(1), [1])
+assert(squares(2), [1 4])
+
+# Check that squares raises an error for invalid input:
+number_of_errors = 0;
+for n = [0 -1]
+    try
+        squares(n);
+    catch
+      number_of_errors++;
+    end_try_catch
+endfor
+assert(number_of_errors, 2)
+
+### BEGIN HIDDEN TESTS
+# students will NOT see these extra tests
+assert(squares(10), [1 4 9 16 25 36 49 64 81 100])
+### END HIDDEN TESTS`;
+
+const OCTAVE_ANSWER = `
+function sqs = squares(n)
+    # Compute the squares of the numbers from 1 to n.
+
+    ### BEGIN SOLUTION
+    # Put correct code here. This code is removed for the student version, but is
+    # used to confirm that your tests are valid.
+    if (n <= 0)
+        error("n must be positive")
+    endif
+    sqs = (1:n).^2;
+    ### END SOLUTION
+endfunction`;
+
+const OCTAVE_MANUAL_ANSWER = `
+function s = foo(a, b)
+    # Compute the sum of a and b.
+
+    ### BEGIN SOLUTION
+    s = a + b;
+    ### END SOLUTION
+endfunction`;
+
 const TASK_TEMPLATE = `
 Describe the task here, e.g., "Process the data and create
 a plot to illustrate your results."
@@ -172,6 +219,42 @@ Describe how you will grade the task here.
 
 === END MARK SCHEME ===
 `;
+
+const MC_QUESTION = `
+## Question 7
+
+What's whats the answer to life the universe and *everything*?
+
+* (A) $\\pi$
+* (B) 42
+* (C) $\\infty$
+`;
+
+const MC_ANSWER = `answer_7 = ""   # enter your answer inside the string quotes`;
+
+const PY_MC_TEST = `
+assert answer_7 in ['A', 'B', 'C']
+### BEGIN HIDDEN TESTS
+assert answer_7 == 'B'
+### END HIDDEN TESTS`;
+
+const R_MC_TEST = `
+testthat::expect_true(answer_7, c('A', 'B', 'C'))
+### BEGIN HIDDEN TESTS
+testthat::expect_equal(answer_7, 'B')
+### END HIDDEN TESTS`;
+
+const JULIA_MC_TEST = `
+@test answer_7 in ['A', 'B', 'C']
+### BEGIN HIDDEN TESTS
+@test answer_7 == 'B'
+### END HIDDEN TESTS`;
+
+const OCTAVE_MC_TEST = `
+assert(strfind("ABC", answer_7) && length(answer_7) == 1)
+### BEGIN HIDDEN TESTS
+assert(answer_7 == "B")
+### END HIDDEN TESTS`;
 
 export const CELLTYPE_INFO_LIST: CelltypeInfo[] = [
   {
@@ -210,6 +293,7 @@ export const CELLTYPE_INFO_LIST: CelltypeInfo[] = [
       python: PY_MANUAL_ANSWER,
       r: R_MANUAL_ANSWER,
       julia: JULIA_MANUAL_ANSWER,
+      octave: OCTAVE_MANUAL_ANSWER,
     },
   },
   {
@@ -257,6 +341,7 @@ export const CELLTYPE_INFO_LIST: CelltypeInfo[] = [
       python: PY_ANSWER,
       r: R_ANSWER,
       julia: JULIA_ANSWER,
+      octave: OCTAVE_ANSWER,
     },
   },
   {
@@ -281,6 +366,7 @@ export const CELLTYPE_INFO_LIST: CelltypeInfo[] = [
       python: PY_TEST,
       r: R_TEST,
       julia: JULIA_TEST,
+      octave: OCTAVE_TEST,
     },
   },
   {
@@ -314,6 +400,67 @@ export const CELLTYPE_INFO_LIST: CelltypeInfo[] = [
     task: false,
     remove: true,
   },
+  {
+    title: "Multiple-choice question",
+    student_title: "Choose an answer and set it in the next cell.",
+    student_tip:
+      "The cell below should contain a variable, where you assign your answer to.",
+    hover:
+      "This cell contains a multiple-choice question. Add the corresponding test cell to validate and check the student's choice.",
+    value: "mc_question",
+    icon: "list",
+    grade: false,
+    locked: true,
+    solution: false,
+    task: false,
+    remove: false,
+    multiple_choice: true,
+    code_only: false,
+    template: MC_QUESTION,
+    cell_type: "markdown",
+  },
+  {
+    title: "Multiple-choice answer",
+    student_title: "Enter your answer here",
+    student_tip:
+      "Assign your chosen answer to the answer variable. Below, a test will check that this is indeed one of the expected answers. Your teacher will run an additional test to see if your answer is correct.",
+    hover:
+      "This cell contains the answer of the multiple-choice answer. Make sure the variable name corresponds to the test in the next cell!",
+    value: "mc_answer",
+    icon: "list",
+    grade: false,
+    locked: false,
+    solution: true,
+    task: false,
+    remove: false,
+    multiple_choice: true,
+    cell_type: "code",
+    template: MC_ANSWER,
+  },
+  {
+    title: "Multiple-choice test",
+    student_title: "Testing your answer.",
+    student_tip:
+      "You have to assign your answer to the question in the cell above. This cell will test if your answer is correct.",
+    hover:
+      "This cell contains a validation and a hidden test for the multiple-choice answer. Make sure the variable name corresponds to the answer in the previous cell!",
+    value: "mc_test",
+    icon: "list",
+    grade: true,
+    locked: true,
+    solution: false,
+    task: false,
+    remove: false,
+    multiple_choice: true,
+    cell_type: "code",
+    points: DEFAULT_POINTS,
+    template: {
+      python: PY_MC_TEST,
+      r: R_MC_TEST,
+      julia: JULIA_MC_TEST,
+      octave: OCTAVE_MC_TEST,
+    },
+  },
 ];
 
 export const CELLTYPE_INFO_MAP: { [value: string]: CelltypeInfo } = {};
@@ -328,38 +475,49 @@ for (const x of CELLTYPE_INFO_LIST) {
 // in Javascript, but instead use a function with a cache
 // since it's more flexible.
 const value_cache: { [key: string]: string } = {};
-export function state_to_value(state: Metadata): string {
+export function state_to_value(state: Metadata): string | undefined {
   const grade: boolean = !!state.grade;
   const locked: boolean = !!state.locked;
   const solution: boolean = !!state.solution;
   const task: boolean = !!state.task;
   const remove: boolean = !!state.remove;
+  const multiple_choice: boolean = !!state.multiple_choice;
 
   if (
     remove === false &&
     grade === false &&
     solution === false &&
-    task === false
+    task === false &&
+    multiple_choice === false
   ) {
     // special case: either nothing or readonly
     return locked ? "readonly" : "";
   }
 
-  // other possibilities for grade/solution/task/remove state:
-  const key = JSON.stringify({ grade, solution, task, remove });
+  // other possibilities for grade/solution/task/remove/multiple_choice state:
+  const key = JSON.stringify({
+    grade,
+    solution,
+    task,
+    remove,
+    multiple_choice,
+  });
   if (value_cache[key] != undefined) return value_cache[key];
   for (const x of CELLTYPE_INFO_LIST) {
     if (
       x.grade == grade &&
       x.solution == solution &&
       x.task == task &&
-      x.remove == remove
+      x.remove == remove &&
+      (x.multiple_choice ?? false) == multiple_choice
     ) {
       value_cache[key] = x.value;
       return x.value;
     }
   }
-  throw Error(`invalid state - "${key}"`);
+  // throwing and error here causes the webapp to crash completely,
+  // but we want to continue showing the probematic notebook.
+  console.warn(`Invalid NBGrader state: "${key}"`);
 }
 
 export function value_to_state(value: string): Metadata {
@@ -374,6 +532,7 @@ export function value_to_state(value: string): Metadata {
     task: x.task,
     points: x.points,
     remove: x.remove,
+    multiple_choice: x.multiple_choice,
   };
 }
 
@@ -408,4 +567,8 @@ export function value_to_template_content(
   }
   const content = template[language];
   return content == null ? "" : content.trim();
+}
+
+export function set_cell_type(value: string) {
+  return CELLTYPE_INFO_MAP[value].cell_type;
 }

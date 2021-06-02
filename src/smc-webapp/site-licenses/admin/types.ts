@@ -3,8 +3,9 @@
  *  License: AGPLv3 s.t. "Commons Clause" – see LICENSE.md for details
  */
 
-import { Map, Set } from "immutable";
+import { List, Map, Set } from "immutable";
 import { TypedMap } from "../../app-framework";
+import { Quota } from "smc-util/db-schema/site-licenses";
 
 export type upgrade_fields_type =
   | "disk_quota"
@@ -41,6 +42,7 @@ export interface SiteLicense {
   managers?: string[];
   restricted?: boolean;
   upgrades?: Upgrades;
+  quota?: Quota;
   run_limit?: number;
   apply_limit?: number;
 }
@@ -53,6 +55,7 @@ export type license_field_type =
   | "map"
   | "boolean"
   | "upgrades"
+  | "quota"
   | "number"
   | "readonly";
 
@@ -68,6 +71,7 @@ export type license_field_names =
   | "managers"
   // | "restricted" // hide for now since not implemented at all
   | "upgrades"
+  | "quota"
   | "run_limit";
 // | "apply_limit" // hide for now since not implemented at all
 
@@ -85,6 +89,7 @@ export const license_fields: {
   managers: "account_id[]",
   // restricted: "boolean",  // hide for now since not implemented at all
   upgrades: "upgrades",
+  quota: "quota",
   run_limit: "number",
   //apply_limit: "number" // hide for now since not implemented at all
 };
@@ -106,7 +111,7 @@ export interface SiteLicensesState {
   error?: string;
   loading?: boolean;
   creating?: boolean;
-  site_licenses?: SiteLicense[]; // licenses that match the search
+  site_licenses?: List<TypedMap<SiteLicense>>; // licenses that match the search
   editing?: Set<string>; // id's of site licenses that are currently being edited.
   saving?: Set<string>; // id's of site licenses that are currently being saved to the backend.
   show_projects?: Map<string, Date | "now">; // id's where we should show the projects that are using the license and what cutoff date

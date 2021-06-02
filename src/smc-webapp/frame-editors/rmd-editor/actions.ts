@@ -7,8 +7,9 @@
 R Markdown Editor Actions
 */
 
-import { Set } from "immutable";
+import { reuseInFlight } from "async-await-utils/hof";
 import { debounce } from "lodash";
+import { Set } from "immutable";
 import { callback2 } from "smc-util/async-utils";
 import { Actions } from "../markdown-editor/actions";
 import { convert } from "./rmd-converter";
@@ -16,7 +17,7 @@ import { markdown_to_html_frontmatter } from "../../markdown";
 import { FrameTree } from "../frame-tree/types";
 import { redux } from "../../app-framework";
 import { ExecOutput } from "../generic/client";
-import { path_split } from "smc-util/misc2";
+import { path_split } from "smc-util/misc";
 import { derive_rmd_output_filename } from "./utils";
 import {
   Actions as BaseActions,
@@ -46,8 +47,7 @@ output: html_document
 `;
 
 export class RmdActions extends Actions {
-  private _last_save_time: number = 0;
-  private _last_build_rmd: string = "";
+  private _last_rmd_hash: string | null = null;
   private is_building: boolean = false;
   private run_rmd_converter: Function;
 
@@ -55,31 +55,41 @@ export class RmdActions extends Actions {
     super._init2(); // that's the one in markdown-editor/actions.ts
     if (!this.is_public) {
       // one extra thing after markdown.
-      this._init_rmd_converter();
+      this._syncstring.once("ready", this._init_rmd_converter.bind(this));
       this._check_produced_files();
       this.setState({ custom_pdf_error_message });
     }
   }
 
+  private do_implicit_builds(): boolean {
+    const account: any = this.redux.getStore("account");
+    if (account != null) {
+      return !!account.getIn(["editor_settings", "build_on_save"]);
+    }
+    return true;
+  }
+
   _init_rmd_converter(): void {
+    // one build takes min. a few seconds up to a minute or more
     this.run_rmd_converter = debounce(
-      (time?: number) => this._run_rmd_converter(time),
+      async (hash?) => await this._run_rmd_converter(hash),
       5 * 1000,
-      {
-        leading: true,
-        trailing: true,
-      }
+      { leading: true, trailing: false }
     );
-    this._syncstring.on("save-to-disk", (time) => {
-      this._last_save_time = time;
-      this.run_rmd_converter();
-    });
-    this._syncstring.on("after-change", () => {
-      if (this._last_build_rmd != this._syncstring.to_str()) {
-        this.build();
+
+    const do_build = reuseInFlight(async () => {
+      if (!this.do_implicit_builds()) return;
+      if (this._syncstring == null) return;
+      const hash = this._syncstring.hash_of_saved_version();
+      if (this._last_rmd_hash != hash) {
+        this._last_rmd_hash = hash;
+        await this.run_rmd_converter();
       }
     });
-    this._syncstring.once("ready", () => this._run_rmd_converter());
+
+    this._syncstring.on("save-to-disk", do_build);
+    this._syncstring.on("after-change", do_build);
+    this.run_rmd_converter();
   }
 
   async build(id?: string): Promise<void> {
@@ -96,8 +106,7 @@ export class RmdActions extends Actions {
     try {
       const actions = this.redux.getEditorActions(this.project_id, this.path);
       await (actions as BaseActions<CodeEditorState>).save(false);
-      // we don't use this._last_save_time but instead a new timestamp
-      await this.run_rmd_converter(new Date().valueOf());
+      await this.run_rmd_converter(Date.now());
     } finally {
       this.is_building = false;
     }
@@ -151,7 +160,8 @@ export class RmdActions extends Actions {
     });
   }
 
-  async _run_rmd_converter(time?: number): Promise<void> {
+  // use this.run_rmd_converter
+  private async _run_rmd_converter(hash?): Promise<void> {
     // TODO: should only run knitr if at least one frame is visible showing preview?
     // maybe not, since might want to show error.
     if (this._syncstring == null || this._syncstring.get_state() != "ready") {
@@ -159,7 +169,11 @@ export class RmdActions extends Actions {
       // fire this at any time.
       return;
     }
-    this._last_build_rmd = this._syncstring.to_str();
+    if (this._last_rmd_hash == null) {
+      this._last_rmd_hash = this._syncstring.hash_of_saved_version();
+    }
+    const md = this._syncstring.to_str();
+    if (md == null) return;
     this.set_status("Running RMarkdown...");
     this.setState({ building: true });
     this.set_error("");
@@ -167,23 +181,16 @@ export class RmdActions extends Actions {
     let markdown = "";
     let output: ExecOutput | undefined = undefined;
     try {
-      const md: string = this._syncstring.to_str();
-      let frontmatter = "";
-      if (md !== undefined) {
-        const md2html = markdown_to_html_frontmatter(md);
-        frontmatter = md2html.frontmatter;
-        markdown = md2html.html;
-      } else {
-        return;
-      }
+      const { frontmatter, html } = markdown_to_html_frontmatter(md);
+      markdown = html;
       output = await convert(
         this.project_id,
         this.path,
         frontmatter,
-        time || this._last_save_time
+        hash || this._last_rmd_hash
       );
       this.set_log(output);
-      if (output.exit_code != 0) {
+      if (output == null || output.exit_code != 0) {
         this.set_error(
           "Error compiling RMarkdown. Please check the Build Log!"
         );
@@ -226,7 +233,7 @@ export class RmdActions extends Actions {
   reload(_id?: string, hash?: number) {
     // what is id supposed to be used for?
     // the html editor, which also has an iframe, calls somehow super.reload
-    hash = hash || new Date().getTime();
+    hash = hash || Date.now();
     ["iframe", "pdfjs_canvas", "markdown"].forEach((viewer) =>
       this.set_reload(viewer, hash)
     );

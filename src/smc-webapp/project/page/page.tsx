@@ -3,8 +3,10 @@
  *  License: AGPLv3 s.t. "Commons Clause" – see LICENSE.md for details
  */
 
+import { Modal } from "antd";
 import { NavItem, Nav } from "react-bootstrap";
-import { DeletedProjectWarning, Loading } from "../../r_misc";
+import { Loading } from "../../r_misc";
+import { DeletedProjectWarning } from "../warnings/deleted";
 import { Content } from "./content";
 import { tab_to_path } from "smc-util/misc";
 import {
@@ -22,7 +24,10 @@ import { DiskSpaceWarning } from "../warnings/disk-space";
 import { RamWarning } from "../warnings/ram";
 import { OOMWarning } from "../warnings/oom";
 import { TrialBanner } from "../trial-banner";
+import { SoftwareEnvUpgrade } from "./software-env-upgrade";
 import { AnonymousName } from "../anonymous-name";
+import { StartButton } from "../start-button";
+import { useProjectStatus } from "./project-status-hook";
 
 import {
   DEFAULT_FILE_TAB_STYLES,
@@ -63,7 +68,9 @@ export const ProjectPage: React.FC<Props> = ({ project_id, is_active }) => {
     project_id,
     "deleted",
   ]);
-
+  if (actions != null) {
+    useProjectStatus(actions);
+  }
   const open_files_order = useTypedRedux({ project_id }, "open_files_order");
   const open_files = useTypedRedux({ project_id }, "open_files");
   const active_project_tab = useTypedRedux(
@@ -78,8 +85,10 @@ export const ProjectPage: React.FC<Props> = ({ project_id, is_active }) => {
 
   const is_anonymous = useTypedRedux("account", "is_anonymous");
   const fullscreen = useTypedRedux("page", "fullscreen");
+  const modal = useTypedRedux({ project_id }, "modal");
 
   function on_sort_end({ oldIndex, newIndex }): void {
+    if (actions == null) return;
     actions.move_file_tab({
       old_index: oldIndex,
       new_index: newIndex,
@@ -145,6 +154,10 @@ export const ProjectPage: React.FC<Props> = ({ project_id, is_active }) => {
       return;
     }
     const path = tab_to_path(active_project_tab);
+    if (path == null) {
+      // bug -- tab is not a file tab.
+      return;
+    }
     const is_chat_open = open_files.getIn([path, "is_chat_open"]);
     return (
       <div style={INDICATOR_STYLE}>
@@ -308,6 +321,26 @@ export const ProjectPage: React.FC<Props> = ({ project_id, is_active }) => {
     return v.concat(render_editor_tabs());
   }
 
+  function render_project_modal() {
+    if (!is_active || !modal) return;
+    return (
+      <Modal
+        title={modal?.get("title")}
+        visible={is_active && modal != null}
+        onOk={() => {
+          actions?.clear_modal();
+          modal?.get("onOk")?.();
+        }}
+        onCancel={() => {
+          actions?.clear_modal();
+          modal?.get("onCancel")?.();
+        }}
+      >
+        {modal?.get("content")}
+      </Modal>
+    );
+  }
+
   if (open_files_order == null) {
     return <Loading />;
   }
@@ -323,10 +356,13 @@ export const ProjectPage: React.FC<Props> = ({ project_id, is_active }) => {
       <DiskSpaceWarning project_id={project_id} />
       <RamWarning project_id={project_id} />
       <OOMWarning project_id={project_id} />
+      <SoftwareEnvUpgrade project_id={project_id} />
       <TrialBanner project_id={project_id} />
       {!fullscreen && render_file_tabs()}
       {is_deleted && <DeletedProjectWarning />}
+      <StartButton project_id={project_id} />
       {render_project_content()}
+      {render_project_modal()}
     </div>
   );
 };

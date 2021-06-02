@@ -25,10 +25,12 @@ export interface Source {
   address_country: string;
   address_state: string;
   address_zip: string;
+  object: string; // this equals "card" for a credit card source; stripe has many other types of sources that we do NOT support yet.
 }
 
 export interface Plan {
   name: string;
+  active: boolean;
   amount: number;
   currency: string;
   interval_count: number;
@@ -51,7 +53,7 @@ export interface InvoiceLine {
 export type InvoiceLineMap = TypedMap<InvoiceLine>;
 
 export interface Invoice {
-  date: number;
+  created: number;
   id: string;
   paid: boolean;
   description: string;
@@ -61,6 +63,7 @@ export interface Invoice {
   tax_percent: number;
   lines?: {
     data: InvoiceLine[];
+    total_count: number;
   };
 }
 
@@ -89,7 +92,8 @@ export interface Subscription {
   current_period_end: number;
   plan: Plan;
   status: string;
-  start: number;
+  created: number;
+  latest_invoice?: string;
 }
 
 export type PeriodName = "month" | "week" | "year" | "year1" | "month4";

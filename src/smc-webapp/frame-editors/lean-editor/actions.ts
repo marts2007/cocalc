@@ -12,25 +12,17 @@ Lean Editor Actions
 const DEBOUNCE_MS = 750;
 
 import { debounce } from "underscore";
-
 import { List } from "immutable";
-
 import { Store } from "../../app-framework";
-
 import {
   Actions as BaseActions,
   CodeEditorState,
 } from "../code-editor/actions";
-
 import { FrameTree } from "../frame-tree/types";
-
 import { project_api } from "../generic/client";
-import { capitalize } from "smc-util/misc2";
-
+import { capitalize, close } from "smc-util/misc";
 import { Channel } from "smc-webapp/project/websocket/types";
-
 import { Task, Message, Completion } from "./types";
-
 import { update_gutters } from "./gutters";
 
 interface LeanEditorState extends CodeEditorState {
@@ -55,16 +47,22 @@ export class Actions extends BaseActions<LeanEditorState> {
     this.data_queue = [];
 
     this.debounced_process_data_queue = debounce(() => {
+      if (this._state === "closed") return;
       this.process_data_queue();
     }, DEBOUNCE_MS);
 
     this.debounced_update_info = debounce(() => {
+      if (this._state === "closed") return;
       this.update_info();
     }, DEBOUNCE_MS);
+
     this.debounced_update_gutters = debounce(() => {
+      if (this._state === "closed") return;
       this.update_gutters();
     }, DEBOUNCE_MS);
+
     this.debounced_update_status_bar = debounce(() => {
+      if (this._state === "closed") return;
       this.update_status_bar();
     }, DEBOUNCE_MS);
 
@@ -118,6 +116,7 @@ export class Actions extends BaseActions<LeanEditorState> {
   }
 
   handle_data_from_channel(x: object): void {
+    if (this._state === "closed") return;
     this.data_queue.push(x);
     this.debounced_process_data_queue();
   }
@@ -168,9 +167,10 @@ export class Actions extends BaseActions<LeanEditorState> {
       } catch (err) {
         // pass
       }
-      delete this.channel;
     }
     super.close();
+    close(this);
+    this._state = "closed";  // close above clears all attributes, so have to set this afterwards.
   }
 
   update_status_bar = (): void => {

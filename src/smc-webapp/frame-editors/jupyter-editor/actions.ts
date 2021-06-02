@@ -17,7 +17,7 @@ import {
   close_jupyter_actions,
 } from "./jupyter-actions";
 
-interface JupyterEditorState extends CodeEditorState {
+export interface JupyterEditorState extends CodeEditorState {
   slideshow?: {
     state?: "built" | "building" | "";
     url?: string;
@@ -41,6 +41,14 @@ export class JupyterEditorActions extends Actions<JupyterEditorState> {
     this.create_jupyter_actions();
     this.init_new_frame();
     this.init_changes_state();
+
+    this.store.on("close-frame", async ({ id }) => {
+      if (this.frame_actions[id] != null) {
+        await delay(1);
+        this.frame_actions[id].close();
+        delete this.frame_actions[id];
+      }
+    });
   }
 
   public close(): void {
@@ -77,6 +85,11 @@ export class JupyterEditorActions extends Actions<JupyterEditorState> {
       this.setState({ has_unsaved_changes });
     });
 
+    this.watch_for_introspect();
+    this.watch_for_connection_file_change();
+  }
+
+  private watch_for_introspect(): void {
     const store = this.jupyter_actions.store;
     let introspect = store.get("introspect");
     store.on("change", () => {
@@ -92,14 +105,21 @@ export class JupyterEditorActions extends Actions<JupyterEditorState> {
     });
   }
 
-  async close_frame_hook(id: string, type: string): Promise<void> {
-    if (type != "jupyter_cell_notebook") return;
-    // TODO: need to free up frame actions when frame is destroyed.
-    if (this.frame_actions[id] != null) {
-      await delay(1);
-      this.frame_actions[id].close();
-      delete this.frame_actions[id];
-    }
+  private watch_for_connection_file_change(): void {
+    const store = this.jupyter_actions.store;
+    let connection_file = store.get("connection_file");
+    this.jupyter_actions.store.on("change", () => {
+      const c = store.get("connection_file");
+      if (c == connection_file) return;
+      connection_file = c;
+      const id = this._get_most_recent_shell_id("jupyter");
+      if (id == null) {
+        // There is no Jupyter console open right now...
+        return;
+      }
+      // This will update the connection file
+      this.shell(id, true);
+    });
   }
 
   public focus(id?: string): void {
@@ -139,6 +159,9 @@ export class JupyterEditorActions extends Actions<JupyterEditorState> {
       if (id == null) throw Error("no active frame");
     }
     if (this.frame_actions[id] != null) {
+      if (this.frame_actions[id].is_closed()) {
+        return undefined;
+      }
       return this.frame_actions[id];
     }
     const node = this._get_frame_node(id);
@@ -220,11 +243,11 @@ export class JupyterEditorActions extends Actions<JupyterEditorState> {
     id: string
   ): Promise<undefined | { command: string; args: string[] }> {
     id = id; // not used
-    // TODO: need to find out the file that corresponds to
-    // socket and put in args.  Can find with ps on the pid.
-    // Also, need to deal with it changing, and shells are
-    // becoming invalid...
-    return { command: "jupyter", args: ["console", "--existing"] };
+    const connection_file = this.jupyter_actions.store.get("connection_file");
+    return {
+      command: "jupyter",
+      args: ["console", "--existing", connection_file],
+    };
   }
 
   // Not an action, but works to make code clean
@@ -303,6 +326,19 @@ export class JupyterEditorActions extends Actions<JupyterEditorState> {
       1 / 3
     );
     // the click to select TOC focuses the active id back on the notebook
+    await delay(0);
+    if (this._state === "closed") return;
+    this.set_active_id(id, true);
+  }
+
+  public async guide(): Promise<void> {
+    const id = this.show_focused_frame_of_type(
+      "commands_guide",
+      "col",
+      false,
+      3 / 4
+    );
+    // the click to select focuses the active id back on the notebook
     await delay(0);
     if (this._state === "closed") return;
     this.set_active_id(id, true);

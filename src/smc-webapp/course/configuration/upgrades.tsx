@@ -5,39 +5,35 @@
 
 // Upgrading quotas for all student projects
 
-import { UpgradeGoal } from "../types";
-import * as misc from "smc-util/misc";
-
-import * as schema from "smc-util/schema";
-
+import { SiteLicenseStrategy, UpgradeGoal } from "../types";
 import {
-  Component,
+  is_zero_map,
+  len,
+  map_sum,
+  parse_number_input,
+  plural,
+  round2,
+} from "smc-util/misc";
+import { PROJECT_UPGRADES } from "smc-util/schema";
+import {
+  CSS,
   React,
-  ReactDOM,
-  AppRedux,
-  rtypes,
   redux,
-  rclass,
   Rendered,
   TypedMap,
+  useIsMountedRef,
+  useRef,
+  useState,
+  useTypedRedux,
 } from "../../app-framework";
 import { CourseActions } from "../actions";
 import { CourseStore } from "../store";
 import { SiteLicensePublicInfo } from "../../site-licenses/site-license-public-info";
-
-const { ShowSupportLink } = require("../../support");
-
-import {
-  A,
-  Icon,
-  Loading,
-  NoUpgrades,
-  Tip,
-  UPGRADE_ERROR_STYLE,
-} from "../../r_misc";
-
+import { SiteLicenseInput } from "../../site-licenses/input";
+import { PurchaseOneLicenseLink } from "../../site-licenses/purchase";
+import { ShowSupportLink } from "../../support";
+import { A, Icon, Loading, Tip, UPGRADE_ERROR_STYLE } from "../../r_misc";
 import { UpgradeRestartWarning } from "../../upgrade-restart-warning";
-
 import {
   Button,
   ButtonGroup,
@@ -47,97 +43,73 @@ import {
   Row,
   Col,
 } from "../../antd-bootstrap";
+import { Alert, Card, Radio } from "antd";
+import { alert_message } from "../../alerts";
 
-import { Alert, Card } from "antd";
+const radioStyle: CSS = {
+  display: "block",
+  whiteSpace: "normal",
+  fontWeight: "inherit", // this is to undo what react-bootstrap does to the labels.
+} as const;
 
-export const LICENSE_STYLE = {
-  width: "100%",
-  margin: "15px 0",
-  padding: "10px",
-  borderRadius: "5px",
-  fontFamily: "monospace",
-  fontSize: "14pt",
-  color: "darkblue",
-};
-
-interface StudentProjectUpgradesProps {
+interface Props {
   name: string;
-  redux: AppRedux;
   upgrade_goal?: TypedMap<UpgradeGoal>;
   institute_pay?: boolean;
   student_pay?: boolean;
   site_license_id?: string;
-
-  // redux props
-  all_projects_have_been_loaded?: boolean;
+  site_license_strategy?: SiteLicenseStrategy;
+  shared_project_id?: string;
+  disabled?: boolean;
 }
 
-interface StudentProjectUpgradesState {
-  upgrade_quotas: boolean; // true if display the quota upgrade panel
-  upgrades: object;
-  upgrade_plan?: object;
-  loading_all_projects?: boolean;
-  show_site_license?: boolean;
-  site_license_id: string;
-}
+export const StudentProjectUpgrades: React.FC<Props> = (props) => {
+  const is_mounted_ref = useIsMountedRef();
+  const upgrade_is_invalid = useRef<boolean>(false);
 
-class StudentProjectUpgrades extends Component<
-  StudentProjectUpgradesProps,
-  StudentProjectUpgradesState
-> {
-  public _upgrade_is_invalid: boolean;
-  private is_mounted: boolean = false;
+  const [upgrade_quotas, set_upgrade_quotas] = useState<boolean>(false); // true if display the quota upgrade panel
+  const [upgrades, set_upgrades] = useState<object>({});
+  const [upgrade_plan, set_upgrade_plan] = useState<object | undefined>(
+    undefined
+  );
+  const [loading_all_projects, set_loading_all_projects] = useState<boolean>(
+    false
+  );
+  const [show_site_license, set_show_site_license] = useState<boolean>(false);
 
-  constructor(props) {
-    super(props);
-    this.state = {
-      upgrade_quotas: false, // true if display the quota upgrade panel
-      upgrades: {},
-      upgrade_plan: undefined,
-      site_license_id: "",
-    };
+  const all_projects_have_been_loaded = useTypedRedux(
+    "projects",
+    "all_projects_have_been_loaded"
+  );
+
+  function get_actions(): CourseActions {
+    return redux.getActions(props.name);
   }
 
-  componentDidMount() {
-    this.is_mounted = true;
+  function get_store(): CourseStore {
+    return redux.getStore(props.name) as any;
   }
 
-  componentWillUnmount() {
-    this.is_mounted = false;
-  }
-
-  static reduxProps() {
-    return { projects: { all_projects_have_been_loaded: rtypes.bool } };
-  }
-
-  get_actions(): CourseActions {
-    return redux.getActions(this.props.name);
-  }
-
-  get_store(): CourseStore {
-    return redux.getStore(this.props.name) as any;
-  }
-
-  upgrade_goal(): UpgradeGoal {
+  function upgrade_goal(): UpgradeGoal {
     const goal = {};
-    for (const quota in this.state.upgrades) {
-      let val = this.state.upgrades[quota];
-      val = misc.parse_number_input(val, false);
-      const { display_factor } = schema.PROJECT_UPGRADES.params[quota];
+    for (const quota in upgrades) {
+      let val = upgrades[quota];
+      val = parse_number_input(val, false);
+      const { display_factor } = PROJECT_UPGRADES.params[quota];
       goal[quota] = val / display_factor;
     }
     return goal;
   }
 
-  save_upgrade_quotas = () => {
-    this.setState({ upgrade_quotas: false });
-    const a = this.get_actions();
-    const upgrade_goal = this.upgrade_goal();
-    a.configuration.set_upgrade_goal(upgrade_goal);
-    a.student_projects.upgrade_all_student_projects(upgrade_goal);
-  };
+  function save_upgrade_quotas(): void {
+    set_upgrade_quotas(false);
+    const a = get_actions();
+    const goal = upgrade_goal();
+    a.configuration.set_upgrade_goal(goal);
+    a.student_projects.upgrade_all_student_projects(goal);
+  }
 
-  render_upgrade_heading(num_projects) {
+  function render_upgrade_heading(num_projects) {
     return (
       <Row key="heading">
         <Col md={5}>
@@ -146,16 +118,16 @@ class StudentProjectUpgrades extends Component<
         <Col md={7}>
           <b style={{ fontSize: "11pt" }}>
             Distribute upgrades to your {num_projects} student{" "}
-            {misc.plural(num_projects, "project")} to get quota to the amount in
-            this column (amounts may be decimals)
+            {plural(num_projects, "project")} to get quota to the amount in this
+            column (amounts may be decimals)
           </b>
         </Col>
       </Row>
     );
   }
 
-  is_upgrade_input_valid(val, limit) {
-    const parsed_val = misc.parse_number_input(val, false);
+  function is_upgrade_input_valid(val, limit): boolean {
+    const parsed_val = parse_number_input(val, false);
     if (parsed_val == null || parsed_val > Math.max(0, limit)) {
       // val=0 is always valid
       return false;
@@ -164,25 +136,27 @@ class StudentProjectUpgrades extends Component<
     }
   }
 
-  render_upgrade_row_input(quota, input_type, yours, num_projects, limit) {
+  function render_upgrade_row_input(
+    quota,
+    input_type,
+    yours,
+    num_projects,
+    limit
+  ) {
     let label, val;
-    const ref = `upgrade_${quota}`;
     if (input_type === "number") {
       let style;
-      val =
-        this.state.upgrades[quota] != null
-          ? this.state.upgrades[quota]
-          : yours / num_projects;
-      if (this.state.upgrades[quota] == null) {
+      val = upgrades[quota] ?? yours / num_projects;
+      if (upgrades[quota] == null) {
         if (val === 0 && yours !== 0) {
           val = yours / num_projects;
         }
       }
 
-      if (!this.is_upgrade_input_valid(val, limit)) {
+      if (!is_upgrade_input_valid(val, limit)) {
         style = UPGRADE_ERROR_STYLE;
-        this._upgrade_is_invalid = true;
-        if (misc.parse_number_input(val) != null) {
+        upgrade_is_invalid.current = true;
+        if (parse_number_input(val) != null) {
           label = (
             <div style={UPGRADE_ERROR_STYLE}>
               Reduce the above: you do not have enough upgrades
@@ -198,31 +172,25 @@ class StudentProjectUpgrades extends Component<
         <FormGroup>
           <FormControl
             type="text"
-            ref={ref}
             style={style}
             value={val}
-            onChange={() => {
-              const u = this.state.upgrades;
-              const value = ReactDOM.findDOMNode(this.refs[ref])?.value;
+            onChange={(e) => {
+              const u = upgrades;
+              const value = (e.target as any).value;
               if (value == null) return;
               u[quota] = value;
-              this.setState({ upgrades: u });
-              this.update_plan();
+              set_upgrades(u);
+              update_plan();
             }}
           />
           {label}
         </FormGroup>
       );
     } else if (input_type === "checkbox") {
-      val =
-        this.state.upgrades[quota] != null
-          ? this.state.upgrades[quota]
-          : yours > 0
-          ? 1
-          : 0;
-      const is_valid = this.is_upgrade_input_valid(val, limit);
+      val = upgrades[quota] != null ? upgrades[quota] : yours > 0 ? 1 : 0;
+      const is_valid = is_upgrade_input_valid(val, limit);
       if (!is_valid) {
-        this._upgrade_is_invalid = true;
+        upgrade_is_invalid.current = true;
         label = (
           <div style={UPGRADE_ERROR_STYLE}>
             Uncheck this: you do not have enough upgrades
@@ -235,10 +203,10 @@ class StudentProjectUpgrades extends Component<
         <Checkbox
           checked={val > 0}
           onChange={(e) => {
-            const u = this.state.upgrades;
+            const u = upgrades;
             u[quota] = (e.target as any).checked ? 1 : 0;
-            this.setState({ upgrades: u });
-            this.update_plan();
+            set_upgrades(u);
+            update_plan();
           }}
         >
           {label}
@@ -253,7 +221,7 @@ class StudentProjectUpgrades extends Component<
     }
   }
 
-  render_upgrade_row(quota, available, current, yours, num_projects) {
+  function render_upgrade_row(quota, available, current, yours, num_projects) {
     // quota -- name of the quota
     // available -- How much of this quota the user has available to use on the student projects.
     //              This is the total amount the user purchased minus the amount allocated to other
@@ -267,17 +235,17 @@ class StudentProjectUpgrades extends Component<
       display_factor,
       display_unit,
       input_type,
-    } = schema.PROJECT_UPGRADES.params[quota];
+    } = PROJECT_UPGRADES.params[quota];
 
     yours *= display_factor;
     current *= display_factor;
 
-    const x = this.state.upgrades[quota];
+    const x = upgrades[quota];
     let input: number;
     if (x == "") {
       input = 0;
     } else {
-      const n = misc.parse_number_input(x);
+      const n = parse_number_input(x);
       if (n == null) {
         input = 0;
       } else {
@@ -288,15 +256,15 @@ class StudentProjectUpgrades extends Component<
       input = input > 0 ? 1 : 0;
     }
 
-    const remaining = misc.round2(
+    const remaining = round2(
       (available - (input / display_factor) * num_projects) * display_factor
     );
     const limit = (available / num_projects) * display_factor;
 
-    let cur = misc.round2(current / num_projects);
+    let cur: number | string = round2(current / num_projects);
     if (input_type === "checkbox") {
       if (cur > 0 && cur < 1) {
-        cur = `${misc.round2(cur * 100)}%`;
+        cur = `${round2(cur * 100)}%`;
       } else if (cur === 0) {
         cur = "none";
       } else {
@@ -311,11 +279,11 @@ class StudentProjectUpgrades extends Component<
             <strong>{display}</strong>
           </Tip>
           <span style={{ marginLeft: "1ex" }}>
-            ({remaining} {misc.plural(remaining, display_unit)} remaining)
+            ({remaining} {plural(remaining, display_unit)} remaining)
           </span>
         </Col>
         <Col md={5}>
-          {this.render_upgrade_row_input(
+          {render_upgrade_row_input(
             quota,
             input_type,
             yours,
@@ -330,7 +298,7 @@ class StudentProjectUpgrades extends Component<
     );
   }
 
-  render_upgrade_rows(
+  function render_upgrade_rows(
     purchased_upgrades,
     applied_upgrades,
     num_projects,
@@ -342,26 +310,21 @@ class StudentProjectUpgrades extends Component<
     // num_projects       - number of student projects
     // total_upgrades     - the total amount of each quota that has been applied (by anybody) to these student projects
     // your_upgrades      - total amount of each quota that this user has applied to these student projects
-    this._upgrade_is_invalid = false; // will get set to true by render_upgrade_row if invalid.
+    upgrade_is_invalid.current = false; // will get set to true by render_upgrade_row if invalid.
     const result: any[] = [];
-    for (const quota of schema.PROJECT_UPGRADES.field_order) {
+    for (const quota of PROJECT_UPGRADES.field_order) {
       const total = purchased_upgrades[quota];
-      const yours = your_upgrades[quota] != null ? your_upgrades[quota] : 0;
-      const available =
-        total -
-        (applied_upgrades[quota] != null ? applied_upgrades[quota] : 0) +
-        yours;
-      const current = total_upgrades[quota] != null ? total_upgrades[quota] : 0;
+      const yours = your_upgrades[quota] ?? 0;
+      const available = total - (applied_upgrades[quota] ?? 0) + yours;
+      const current = total_upgrades[quota] ?? 0;
       result.push(
-        this.render_upgrade_row(quota, available, current, yours, num_projects)
+        render_upgrade_row(quota, available, current, yours, num_projects)
       );
     }
     return result;
   }
 
-  render_upgrade_quotas() {
-    const { redux } = this.props;
-
+  function render_upgrade_quotas() {
     // Get available upgrades that instructor has to apply
     const account_store = redux.getStore("account");
     if (account_store == null) {
@@ -369,14 +332,12 @@ class StudentProjectUpgrades extends Component<
     }
 
     const purchased_upgrades = account_store.get_total_upgrades();
-    if (misc.is_zero_map(purchased_upgrades)) {
-      // user has no upgrades on their account
-      return (
-        <NoUpgrades cancel={() => this.setState({ upgrade_quotas: false })} />
-      );
+    if (is_zero_map(purchased_upgrades)) {
+      // user has no upgrades on their account -- show nothing here.
+      return;
     }
 
-    const course_store = this.get_store();
+    const course_store = get_store();
     if (course_store == null) {
       return <Loading />;
     }
@@ -390,7 +351,7 @@ class StudentProjectUpgrades extends Component<
           There are no student projects yet.
           <br />
           <br />
-          {this.render_upgrade_submit_buttons()}
+          {render_upgrade_submit_buttons()}
         </span>
       );
     }
@@ -406,13 +367,13 @@ class StudentProjectUpgrades extends Component<
     let total_upgrades = {}; // all upgrades by anybody
     let your_upgrades = {}; // just by you
     for (const project_id of project_ids) {
-      your_upgrades = misc.map_sum(
+      your_upgrades = map_sum(
         your_upgrades,
-        projects_store.get_upgrades_you_applied_to_project(project_id)
+        projects_store.get_upgrades_you_applied_to_project(project_id) as any
       );
-      total_upgrades = misc.map_sum(
+      total_upgrades = map_sum(
         total_upgrades,
-        projects_store.get_total_project_upgrades(project_id)
+        projects_store.get_total_project_upgrades(project_id) as any
       );
     }
 
@@ -426,9 +387,9 @@ class StudentProjectUpgrades extends Component<
               student project upgrades
             </h3>
             <hr />
-            {this.render_upgrade_heading(num_projects)}
+            {render_upgrade_heading(num_projects)}
             <hr />
-            {this.render_upgrade_rows(
+            {render_upgrade_rows(
               purchased_upgrades,
               applied_upgrades,
               num_projects,
@@ -437,124 +398,69 @@ class StudentProjectUpgrades extends Component<
             )}
             <UpgradeRestartWarning />
             <br />
-            {this.render_upgrade_submit_buttons()}
+            {render_upgrade_submit_buttons()}
             <div style={{ marginTop: "15px", color: "#333" }}>
-              {this.render_upgrade_plan()}
+              {render_upgrade_plan()}
             </div>
-            {this.render_admin_upgrade()}
           </div>
         }
       />
     );
   }
 
-  save_admin_upgrade = (e) => {
-    e.preventDefault();
-    const s = ReactDOM.findDOMNode(this.refs.admin_input)?.value;
-    if (s == null) return;
-    const quotas = JSON.parse(s);
-    // This console.log is intentional... because admin upgrade is only
-    // for really advanced users (i.e., William).
-    console.log(`admin upgrade '${s}' -->`, quotas);
-    this.get_actions().student_projects.admin_upgrade_all_student_projects(
-      quotas
-    );
-    return false;
-  };
-
-  render_admin_upgrade(): Rendered {
-    const groups = redux.getStore("account").get("groups");
-    if (groups == null || !groups.contains("admin")) {
-      return;
-    }
-    return (
-      <div>
-        <br />
-        <hr />
-        <h3>Admin Upgrade</h3>
-        Enter a Javascript-parseable object and hit enter (see the Javascript
-        console for feedback). For example:
-        <pre>
-          {
-            '{"network":1,"member_host":1,"disk_quota":3000,"cores":1,"cpu_shares":0,"memory_request":0,"mintime":43200,"member_host":1,"memory":1500}'
-          }
-        </pre>
-        <form onSubmit={this.save_admin_upgrade}>
-          <FormGroup>
-            <FormControl
-              ref="admin_input"
-              type="text"
-              placeholder={JSON.stringify(schema.DEFAULT_QUOTAS)}
-            />
-          </FormGroup>
-        </form>
-      </div>
-    );
-  }
-
-  render_upgrade_submit_buttons() {
+  function render_upgrade_submit_buttons() {
     return (
       <ButtonGroup>
         <Button
           bsStyle="primary"
-          onClick={this.save_upgrade_quotas}
-          disabled={
-            this.state.upgrade_plan == null ||
-            misc.len(this.state.upgrade_plan) === 0
-          }
+          onClick={save_upgrade_quotas}
+          disabled={upgrade_plan == null || len(upgrade_plan) === 0}
         >
           <Icon name="arrow-circle-up" /> Apply changes
         </Button>
-        <Button onClick={() => this.setState({ upgrade_quotas: false })}>
-          Cancel
-        </Button>
+        <Button onClick={() => set_upgrade_quotas(false)}>Cancel</Button>
       </ButtonGroup>
     );
   }
 
   // call this function to switch state from not viewing the upgrader to viewing the upgrader.
-  adjust_quotas = async () => {
-    if (!this.props.all_projects_have_been_loaded) {
+  async function adjust_quotas(): Promise<void> {
+    if (!all_projects_have_been_loaded) {
       // See https://github.com/sagemathinc/cocalc/issues/3802
-      const a = this.props.redux.getActions("projects");
+      const a = redux.getActions("projects");
       if (a != null) {
-        this.setState({ loading_all_projects: true });
+        set_loading_all_projects(true);
         await a.load_all_projects();
-        if (!this.is_mounted) return;
-        this.setState({ loading_all_projects: false });
+        if (!is_mounted_ref.current) return;
+        set_loading_all_projects(false);
       }
     }
     let left;
     const upgrades =
       (left =
-        this.props.upgrade_goal != null
-          ? this.props.upgrade_goal.toJS()
-          : undefined) != null
+        props.upgrade_goal != null ? props.upgrade_goal.toJS() : undefined) !=
+      null
         ? left
         : {};
-    const upgrade_plan = this.get_store().get_upgrade_plan(upgrades);
+    const upgrade_plan = get_store().get_upgrade_plan(upgrades);
     for (const quota in upgrades) {
       const val = upgrades[quota];
-      upgrades[quota] =
-        val * schema.PROJECT_UPGRADES.params[quota].display_factor;
+      upgrades[quota] = val * PROJECT_UPGRADES.params[quota].display_factor;
     }
-    this.setState({
-      upgrade_quotas: true,
-      upgrades,
-      upgrade_plan,
-    });
-  };
-
-  update_plan() {
-    const plan = this.get_store().get_upgrade_plan(this.upgrade_goal());
-    this.setState({ upgrade_plan: plan });
+    set_upgrade_quotas(true);
+    set_upgrades(upgrades);
+    set_upgrade_plan(upgrade_plan);
   }
 
-  render_upgrade_plan() {
-    if (this.state.upgrade_plan == null) {
+  function update_plan(): void {
+    set_upgrade_plan(get_store().get_upgrade_plan(upgrade_goal()));
+  }
+
+  function render_upgrade_plan() {
+    if (upgrade_plan == null) {
       return;
     }
-    const n = misc.len(this.state.upgrade_plan);
+    const n = len(upgrade_plan);
     if (n === 0) {
       return (
         <span>
@@ -572,116 +478,213 @@ class StudentProjectUpgrades extends Component<
     }
   }
 
-  render_upgrade_quotas_button() {
-    if (this.state.loading_all_projects) {
+  function render_upgrade_quotas_button() {
+    if (loading_all_projects) {
       return (
-        <Button disabled={true} bsStyle="primary">
+        <Button disabled={true}>
           <Icon name="arrow-circle-up" /> Upgrade using a course package or
           subscription... (Loading)
         </Button>
       );
     }
     return (
-      <Button bsStyle="primary" onClick={this.adjust_quotas}>
+      <Button onClick={adjust_quotas}>
         <Icon name="arrow-circle-up" /> Upgrade using a course package or
         subscription...
       </Button>
     );
   }
 
-  private render_site_license_text(): Rendered {
-    if (!this.state.show_site_license) return;
-    const disabled =
-      this.state.site_license_id.length != 36 &&
-      this.state.site_license_id.length != 0;
+  function add_site_license_id(license_id: string): void {
+    const actions = get_actions();
+    actions.configuration.add_site_license_id(license_id);
+    actions.configuration.configure_all_projects();
+  }
+
+  function remove_site_license_id(license_id: string): void {
+    const actions = get_actions();
+    actions.configuration.remove_site_license_id(license_id);
+    actions.configuration.configure_all_projects();
+  }
+
+  function render_site_license_text(): Rendered {
+    if (!show_site_license) return;
     return (
       <div>
+        <br />
         Enter a license key below to automatically apply upgrades from that
         license to this course project, all student projects, and the shared
         project whenever they are running. Clear the field below to stop
         applying those upgrades. Upgrades from the license are only applied when
         a project is started. Create a <ShowSupportLink /> if you would like to
         purchase a license key.
-        <input
-          style={LICENSE_STYLE}
-          type="text"
-          value={this.state.site_license_id}
-          onChange={(e) => this.setState({ site_license_id: e.target.value })}
+        <SiteLicenseInput
+          onSave={(license_id) => {
+            set_show_site_license(false);
+            add_site_license_id(license_id);
+          }}
+          onCancel={() => {
+            set_show_site_license(false);
+          }}
         />
-        <ButtonGroup>
-          {" "}
-          <Button onClick={() => this.setState({ show_site_license: false })}>
-            Cancel
-          </Button>
-          <Button
-            bsStyle="primary"
-            disabled={disabled}
-            onClick={() => {
-              const actions = this.get_actions();
-              actions.configuration.set_site_license_id(
-                this.state.site_license_id
-              );
-              actions.configuration.configure_all_projects();
-              this.setState({ show_site_license: false });
-            }}
-          >
-            Save
-          </Button>{" "}
-        </ButtonGroup>
-        <br />
-        {disabled ? "Valid license keys are 36 characters long." : ""}
       </div>
     );
   }
 
-  render_current_license(): Rendered {
-    if (!this.props.site_license_id) return;
+  function render_license(license_id: string): JSX.Element {
+    return (
+      <SiteLicensePublicInfo
+        key={license_id}
+        license_id={license_id}
+        onRemove={() => {
+          remove_site_license_id(license_id);
+        }}
+        warn_if={(info) => {
+          const n =
+            get_store().get_student_ids().length +
+            1 +
+            (props.shared_project_id ? 1 : 0);
+          if (info.run_limit < n) {
+            return `NOTE: This license can only upgrade ${info.run_limit} simultaneous running projects, but there are ${n} projects associated to this course.`;
+          }
+        }}
+      />
+    );
+  }
+
+  function render_site_license_strategy() {
+    return (
+      <div
+        style={{
+          margin: "15px",
+          border: "1px solid lightgrey",
+          padding: "15px",
+        }}
+      >
+        <b>License strategy:</b> Since you have multiple licenses, there are two
+        different ways they can be used, depending on whether you're trying to
+        maximize the number of covered students or the upgrades per students:
+        <br />
+        <Radio.Group
+          disabled={props.disabled}
+          style={{ marginLeft: "15px", marginTop: "15px" }}
+          onChange={(e) => {
+            const actions = get_actions();
+            actions.configuration.set_site_license_strategy(e.target.value);
+            actions.configuration.configure_all_projects(true);
+          }}
+          value={props.site_license_strategy ?? "serial"}
+        >
+          <Radio value={"serial"} key={"serial"} style={radioStyle}>
+            <b>Maximize number of covered students:</b> apply one license to
+            each project associated to this course (e.g., you bought a license
+            to handle a few more students who added your course)
+          </Radio>
+          <Radio value={"parallel"} key={"parallel"} style={radioStyle}>
+            <b>Maximize upgrades to each project:</b> apply all licenses to all
+            projects associated to this course (e.g., you bought a license to
+            increase the RAM or CPU for all students)
+          </Radio>
+        </Radio.Group>
+      </div>
+    );
+  }
+
+  function render_current_licenses(): Rendered {
+    if (!props.site_license_id) return;
+    const licenses = props.site_license_id.split(",");
+    const v: JSX.Element[] = [];
+    for (const license_id of licenses) {
+      v.push(render_license(license_id));
+    }
     return (
       <div style={{ margin: "15px 0" }}>
         This project and all student projects will be upgraded using the
-        following license:
+        following{" "}
+        <b>
+          {licenses.length} license{licenses.length > 1 ? "s" : ""}
+        </b>
+        :
         <br />
-        <SiteLicensePublicInfo license_id={this.props.site_license_id} />
+        <div
+          style={{
+            margin: "15px",
+            border: "1px solid lightgrey",
+            padding: "15px",
+            overflowY: "auto",
+            maxHeight: "50vH",
+          }}
+        >
+          {v}
+        </div>
+        {licenses.length > 1 && render_site_license_strategy()}
       </div>
     );
   }
 
-  render_site_license() {
+  function render_remove_all_licenses() {
+    return (
+      <Button
+        onClick={async () => {
+          try {
+            await get_actions().student_projects.remove_all_project_licenses();
+            alert_message({
+              type: "info",
+              message:
+                "Successfully removed all licenses from student projects.",
+            });
+          } catch (err) {
+            alert_message({ type: "error", message: `${err}` });
+          }
+        }}
+      >
+        Remove all licenses from student projects
+      </Button>
+    );
+  }
+
+  function render_site_license() {
+    const n = !!props.site_license_id
+      ? props.site_license_id.split(",").length
+      : 0;
     return (
       <div>
-        {this.render_current_license()}
+        {render_current_licenses()}
         <Button
-          onClick={() => {
-            this.setState({
-              show_site_license: true,
-              site_license_id: this.props.site_license_id ?? "",
-            });
-          }}
-          disabled={this.state.show_site_license}
+          onClick={() => set_show_site_license(true)}
+          disabled={show_site_license}
         >
           <Icon name="key" />{" "}
-          {this.props.site_license_id
-            ? "Change or remove site license"
-            : "Upgrade using a license key..."}
+          {n == 0
+            ? "Upgrade using a license key"
+            : "Add another license key (more students or better upgrades)"}
+          ...
         </Button>
-        {this.render_site_license_text()}
+        {render_site_license_text()}
+        <br />
+        <br />
+        <div style={{ fontSize: "13pt" }}>
+          <PurchaseOneLicenseLink />
+        </div>
+        <br />
+        {n == 0 && render_remove_all_licenses()}
       </div>
     );
   }
 
-  handle_institute_pay_checkbox = (e) => {
-    return this.get_actions().configuration.set_pay_choice(
+  function handle_institute_pay_checkbox(e): void {
+    return get_actions().configuration.set_pay_choice(
       "institute",
       e.target.checked
     );
-  };
+  }
 
-  render_checkbox() {
+  function render_checkbox() {
     return (
       <span>
         <Checkbox
-          checked={!!this.props.institute_pay}
-          onChange={this.handle_institute_pay_checkbox}
+          checked={!!props.institute_pay}
+          onChange={handle_institute_pay_checkbox}
         >
           You or your institute will pay for this course
         </Checkbox>
@@ -689,14 +692,14 @@ class StudentProjectUpgrades extends Component<
     );
   }
 
-  render_details() {
+  function render_details() {
     return (
       <div>
-        {this.state.upgrade_quotas
-          ? this.render_upgrade_quotas()
-          : this.render_upgrade_quotas_button()}
+        {render_site_license()}
         <hr />
-        {this.render_site_license()}
+        {upgrade_quotas
+          ? render_upgrade_quotas()
+          : render_upgrade_quotas_button()}
         <hr />
         <div style={{ color: "#666" }}>
           <p>
@@ -712,30 +715,25 @@ class StudentProjectUpgrades extends Component<
     );
   }
 
-  render() {
-    let bg, style;
-    if (this.props.student_pay || this.props.institute_pay) {
-      style = bg = undefined;
-    } else {
-      style = { fontWeight: "bold" };
-      bg = "#fcf8e3";
-    }
-    return (
-      <Card
-        style={{ background: bg }}
-        title={
-          <div style={style}>
-            <Icon name="dashboard" /> Upgrade all student projects (institute
-            pays)
-          </div>
-        }
-      >
-        {this.render_checkbox()}
-        {this.props.institute_pay ? this.render_details() : undefined}
-      </Card>
-    );
+  let bg, style;
+  if (props.student_pay || props.institute_pay) {
+    style = bg = undefined;
+  } else {
+    style = { fontWeight: "bold" };
+    bg = "#fcf8e3";
   }
-}
-
-const StudentProjectUpgrades0 = rclass(StudentProjectUpgrades);
-export { StudentProjectUpgrades0 as StudentProjectUpgrades };
+  return (
+    <Card
+      style={{ background: bg }}
+      title={
+        <div style={style}>
+          <Icon name="dashboard" /> Upgrade all student projects (institute
+          pays)
+        </div>
+      }
+    >
+      {render_checkbox()}
+      {props.institute_pay ? render_details() : undefined}
+    </Card>
+  );
+};

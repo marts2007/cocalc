@@ -6,7 +6,7 @@
 // common configuration for mapping programming languages (lower case) to formatters
 // this is used by webapp and the project
 
-import { tuple } from "./misc2";
+import { tuple } from "./misc";
 
 // ideally, this is the "syntax", but for historic reasons it's what is being called "parsed" and
 // hence there there are additional entries for backwards compatibility with older projects.
@@ -40,7 +40,7 @@ export type Syntax =
   // the ones below are to be eliminated (they're in "Tool")
   | "prettier"
   | "typescript"
-  | "postcss"
+  | "css"
   | "babel"
   | "gofmt"
   | "clang-format"
@@ -74,7 +74,7 @@ export type Tool =
   | "rustfmt"
   | "bib-biber"
   | "prettier" // always available
-  | "postcss" // via prettier
+  | "css" // via prettier
   | "babel" // via prettier
   | "typescript" // via prettier
   | "json" // via prettier
@@ -162,7 +162,7 @@ export const syntax2tool: Readonly<Config> = Object.freeze({
   tsx: "typescript", // in prettier
   TypeScript: "typescript", // in prettier
   typescript: "typescript", // in prettier
-  CSS: "postcss", // in prettier
+  CSS: "css", // in prettier
   json: "json", // in prettier
   JSON: "json", // in prettier
   yaml: "yaml", // in prettier
@@ -207,7 +207,7 @@ export const syntax2display: Readonly<Langs> = Object.freeze({
   typescript: "TypeScript",
   html: "HTML",
   xml: "XML",
-  postcss: "CSS",
+  css: "CSS",
   javascript: "JavaScript",
 } as Langs);
 

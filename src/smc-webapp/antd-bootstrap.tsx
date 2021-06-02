@@ -35,7 +35,7 @@ import * as antd from "antd";
 // only four in antd, and it we can't automatically collapse them down in a meaningful
 // way without fundamentally removing information and breaking our UI (e.g., buttons
 // change look after an assignment is sent successfully in a course).
-type ButtonStyle =
+export type ButtonStyle =
   | "primary"
   | "success"
   | "default"
@@ -55,6 +55,8 @@ const BS_STYLE_TO_TYPE: {
   danger: "danger",
   link: "link",
 };
+
+export type ButtonSize = "large" | "small" | "xsmall";
 
 function parse_bsStyle(props: {
   bsStyle?: ButtonStyle;
@@ -115,7 +117,7 @@ function parse_bsStyle(props: {
 
 export function Button(props: {
   bsStyle?: ButtonStyle;
-  bsSize?: "large" | "small" | "xsmall";
+  bsSize?: ButtonSize;
   style?: React.CSSProperties;
   disabled?: boolean;
   onClick?: (e?: any) => void;
@@ -126,6 +128,7 @@ export function Button(props: {
   target?: string;
   title?: string;
   tabIndex?: number;
+  active?: boolean;
   id?: string;
 }) {
   // The span is needed inside below, otherwise icons and labels get squashed together
@@ -138,6 +141,10 @@ export function Button(props: {
     size = "middle";
   } else if (props.bsSize == "xsmall") {
     size = "small";
+  }
+  if (props.active) {
+    style.backgroundColor = "#d4d4d4";
+    style.boxShadow = "inset 0 3px 5px rgb(0 0 0 / 13%)";
   }
   return (
     <antd.Button
@@ -156,7 +163,7 @@ export function Button(props: {
       tabIndex={props.tabIndex}
       id={props.id}
     >
-      <span>{props.children}</span>
+      <>{props.children}</>
     </antd.Button>
   );
 }
@@ -302,13 +309,15 @@ export function Tabs(props: {
   animation?: boolean;
   style?: React.CSSProperties;
   tabBarExtraContent?: React.ReactNode;
+  tabPosition?: "left" | "top" | "right" | "bottom";
+  size?: "small";
   children: any;
 }) {
   // We do this because for antd, "There must be `tab` property on children of Tabs."
   let tabs: Rendered[] | Rendered = [];
   if (Symbol.iterator in Object(props.children)) {
     for (const x of props.children) {
-      if (!x.props) continue;
+      if (x == null || !x.props) continue;
       tabs.push(Tab(x.props));
     }
   } else {
@@ -321,6 +330,8 @@ export function Tabs(props: {
       animated={props.animation ?? false}
       style={props.style}
       tabBarExtraContent={props.tabBarExtraContent}
+      tabPosition={props.tabPosition}
+      size={props.size}
     >
       {tabs}
     </antd.Tabs>

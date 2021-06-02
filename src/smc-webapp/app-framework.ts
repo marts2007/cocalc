@@ -26,12 +26,10 @@ import { Store, StoreConstructorType } from "./app-framework/Store";
 import { Actions } from "./app-framework/Actions";
 import { Table, TableConstructor } from "./app-framework/Table";
 
-import { debug_transform, MODES } from "./app-framework/react-rendering-debug";
-
 // Relative import is temporary, until I figure this out -- needed for *project*
-import { bind_methods, keys, is_valid_uuid_string } from "../smc-util/misc2";
+import { bind_methods, keys, is_valid_uuid_string } from "../smc-util/misc";
 
-export { TypedMap } from "./app-framework/TypedMap";
+export { TypedMap, createTypedMap } from "./app-framework/TypedMap";
 
 import { NAME_TYPE as ComputeImageStoreType } from "./custom-software/util";
 
@@ -294,7 +292,9 @@ export class AppRedux {
     if (this._actions[name] != null) {
       const A = this._actions[name];
       delete this._actions[name];
-      A.destroy();
+      // NOTE: even if A is defined, destroy might not be... due to our
+      // aggressive close function:
+      A?.destroy?.();
     }
   }
 
@@ -670,16 +670,11 @@ export class Redux extends React.Component {
     );
   }
 }
+
 // The lines above are just the non-tsx version of this:
 //<Provider store={redux._redux_store}>
 //    {@props.children}
 //</Provider>
-
-// Change this line to alter the debugging mode.
-// Only touch this if testing in a browser, e.g., change this to MODES.count.  For a
-// complete list of options, see app-framework/react-rendering-debug.ts.
-rclass = debug_transform(rclass, MODES.default);
-//rclass = debug_transform(rclass, MODES.count);
 
 export const Component = React.Component;
 export type Rendered = React.ReactElement<any> | undefined;

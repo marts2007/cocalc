@@ -7,8 +7,15 @@ import { delay } from "awaiting";
 import { once } from "../smc-util/async-utils";
 import { SyncTable, SyncTableState } from "../smc-util/sync/table";
 import { TypedMap } from "../smc-webapp/app-framework";
-import { endswith, merge, path_split, startswith } from "../smc-util/misc2";
-import { field_cmp, seconds_ago } from "../smc-util/misc";
+import {
+  close,
+  endswith,
+  merge,
+  path_split,
+  startswith,
+  field_cmp,
+  seconds_ago,
+} from "../smc-util/misc";
 import { DirectoryListingEntry } from "../smc-util/types";
 import { get_listing } from "../directory-listing";
 import {
@@ -54,7 +61,7 @@ interface Listing {
 export type ImmutableListing = TypedMap<Listing>;
 
 class ListingsTable {
-  private table: SyncTable;
+  private readonly table?: SyncTable; // might be removed by close()
   private logger: undefined | { debug: Function };
   private project_id: string;
   private watchers: { [path: string]: Watcher } = {};
@@ -69,13 +76,10 @@ class ListingsTable {
 
   public close(): void {
     this.log("close");
-    delete this.table;
-    delete this.logger;
-    delete this.project_id;
     for (const path in this.watchers) {
       this.stop_watching(path);
     }
-    delete this.watchers;
+    close(this);
   }
 
   // Start watching any paths that have recent interest (so this is not
@@ -143,11 +147,11 @@ class ListingsTable {
   }
 
   private is_ready(): boolean {
-    return this.table?.is_ready();
+    return !!this.table?.is_ready();
   }
 
   private get_table(): SyncTable {
-    if (!this.is_ready()) {
+    if (!this.is_ready() || this.table == null) {
       throw Error("table not ready");
     }
     return this.table;

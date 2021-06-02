@@ -4,24 +4,29 @@
  */
 
 // React libraries
-import { Store } from "../app-framework";
-
+import { Store, redux } from "../app-framework";
 // CoCalc libraries
-import * as misc from "smc-util/misc";
-import { set } from "smc-util/misc2";
+import { cmp, cmp_array, set } from "smc-util/misc";
 import { DirectoryListingEntry } from "smc-util/types";
-
 // Course Library
 import { STEPS } from "./util";
 import { Map, Set, List } from "immutable";
-import { TypedMap, createTypedMap } from "../app-framework/TypedMap";
-
+import { TypedMap, createTypedMap } from "../app-framework";
 import { SITE_NAME } from "smc-util/theme";
-
 // Upgrades
 import * as project_upgrades from "./project-upgrades";
+import { Datastore } from "../projects/actions";
+import { StudentProjectFunctionality } from "./configuration/customize-student-project-functionality";
 
-import { AssignmentCopyStep, AssignmentStatus, UpgradeGoal } from "./types";
+export const PARALLEL_DEFAULT = 5;
+export const MAX_COPY_PARALLEL = 25;
+
+import {
+  AssignmentCopyStep,
+  AssignmentStatus,
+  SiteLicenseStrategy,
+  UpgradeGoal,
+} from "./types";
 
 import { NotebookScores } from "../jupyter/nbgrader/autograde";
 
@@ -46,7 +51,7 @@ export type StudentRecord = TypedMap<{
   first_name: string;
   last_name: string;
   last_active: number;
-  hosting: boolean;
+  hosting: string;
   email_address: string;
   project_id: string;
   deleted: boolean;
@@ -70,7 +75,7 @@ export type AssignmentRecord = TypedMap<{
   peer_grade?: {
     enabled: boolean;
     due_date: number;
-    map: { [student_id: string]: string[] };
+    map: { [student_id: string]: string[] }; // map from student_id to *who* will grade that student
   };
   note: string;
 
@@ -95,6 +100,7 @@ export type AssignmentRecord = TypedMap<{
   nbgrader_scores?: {
     [student_id: string]: { [ipynb: string]: NotebookScores | string };
   };
+  nbgrader_score_ids?: { [ipynb: string]: string[] };
 }>;
 
 export type AssignmentsMap = Map<string, AssignmentRecord>;
@@ -117,6 +123,7 @@ export type SortDescription = TypedMap<{
 
 export type CourseSettingsRecord = TypedMap<{
   allow_collabs: boolean;
+  student_project_functionality?: StudentProjectFunctionality;
   description: string;
   email_invite: string;
   institute_pay: boolean;
@@ -126,22 +133,23 @@ export type CourseSettingsRecord = TypedMap<{
   title: string;
   upgrade_goal: Map<any, any>;
   site_license_id?: string;
-  nbgrader_grade_in_instructor_project?: boolean;
+  site_license_strategy?: SiteLicenseStrategy;
+  copy_parallel?: number;
+  nbgrader_grade_in_instructor_project?: boolean; // deprecated
+  nbgrader_grade_project?: string;
+  nbgrader_include_hidden_tests?: boolean;
   nbgrader_cell_timeout_ms?: number;
   nbgrader_timeout_ms?: number;
+  nbgrader_max_output?: number;
+  nbgrader_max_output_per_cell?: number;
+  nbgrader_parallel?: number;
 }>;
 
 export const CourseSetting = createTypedMap<CourseSettingsRecord>();
 
-export type IsGradingMap = Map<string, FeedbackRecord>;
+export type IsGradingMap = Map<string, boolean>;
 
 export type ActivityMap = Map<number, string>;
-
-export type FeedbackRecord = TypedMap<{
-  edited_grade: string;
-  edited_comments: string;
-}>;
-export const Feedback = createTypedMap<FeedbackRecord>();
 
 // This NBgraderRunInfo is a map from what nbgrader task is running
 // to when it was started (ms since epoch).  The keys are as follows:
@@ -236,6 +244,18 @@ export class CourseStore extends Store<CourseState> {
     return pay;
   }
 
+  public get_datastore(): Datastore {
+    const settings = this.get("settings");
+    if (settings == null || settings.get("datastore") == null) return undefined;
+    const ds = settings.get("datastore");
+    if (typeof ds === "boolean" || Array.isArray(ds)) {
+      return ds;
+    } else {
+      console.warn(`course/get_datastore: encountered faulty value:`, ds);
+      return undefined;
+    }
+  }
+
   public get_allow_collabs(): boolean {
     return !!this.getIn(["settings", "allow_collabs"]);
   }
@@ -243,7 +263,8 @@ export class CourseStore extends Store<CourseState> {
   public get_email_invite(): string {
     const invite = this.getIn(["settings", "email_invite"]);
     if (invite) return invite;
-    return `Hello!\n\nWe will use ${SITE_NAME} for the course *{title}*.\n\nPlease sign up!\n\n--\n\n{name}`;
+    const site_name = redux.getStore("customize").get("site_name") ?? SITE_NAME;
+    return `Hello!\n\nWe will use ${site_name} for the course *{title}*.\n\nPlease sign up!\n\n--\n\n{name}`;
   }
 
   public get_students(): StudentsMap {
@@ -261,10 +282,11 @@ export class CourseStore extends Store<CourseState> {
       return "Unknown Student";
     }
     // Try instructor assigned name:
-    if (student.get("first_name") || student.get("last_name")) {
-      return [student.get("first_name", ""), student.get("last_name", "")].join(
-        " "
-      );
+    if (student.get("first_name")?.trim() || student.get("last_name")?.trim()) {
+      return [
+        student.get("first_name", "")?.trim(),
+        student.get("last_name", "")?.trim(),
+      ].join(" ");
     }
     const account_id = student.get("account_id");
     if (account_id == null) {
@@ -283,7 +305,7 @@ export class CourseStore extends Store<CourseState> {
     const users = this.redux.getStore("users");
     if (users == null) throw Error("users must be defined");
     const name = users.get_name(account_id);
-    if (name != null) return name;
+    if (name?.trim()) return name;
     // This situation usually shouldn't happen, but maybe could in case the user was known but
     // then removed themselves as a collaborator, or something else odd.
     if (student.has("email_address")) {
@@ -417,7 +439,7 @@ export class CourseStore extends Store<CourseState> {
       }
     }
     v.sort((a, b) =>
-      misc.cmp(
+      cmp(
         this.get_student_sort_name(a.get("student_id")),
         this.get_student_sort_name(b.get("student_id"))
       )
@@ -437,10 +459,21 @@ export class CourseStore extends Store<CourseState> {
     student_id: string
   ): { [ipynb: string]: NotebookScores | string } | undefined {
     const { assignment } = this.resolve({ assignment_id });
-    if (assignment == null) return undefined;
-    const x = assignment.getIn(["nbgrader_scores", student_id]);
-    if (x == null) return undefined;
-    return x.toJS();
+    return assignment?.getIn(["nbgrader_scores", student_id])?.toJS();
+  }
+
+  public get_nbgrader_score_ids(
+    assignment_id: string
+  ): { [ipynb: string]: string[] } | undefined {
+    const { assignment } = this.resolve({ assignment_id });
+    const ids = assignment?.get("nbgrader_score_ids")?.toJS();
+    if (ids != null) return ids;
+    // TODO: If the score id's aren't known, it would be nice to try
+    // to parse the master ipynb file and compute them.  We still
+    // allow for the possibility that this fails and return undefined
+    // in that case.  This is painful since it involves async calls
+    // to the backend, and the code that does this as part of grading
+    // is deep inside other functions...
   }
 
   public get_comments(assignment_id: string, student_id: string): string {
@@ -473,7 +506,7 @@ export class CourseStore extends Store<CourseState> {
     const f = function (a: AssignmentRecord) {
       return [a.get("due_date", 0), a.get("path", "")];
     };
-    v.sort((a, b) => misc.cmp_array(f(a), f(b)));
+    v.sort((a, b) => cmp_array(f(a), f(b)));
     return v;
   }
 
@@ -838,7 +871,7 @@ export class CourseStore extends Store<CourseState> {
     const actions = this.redux.getActions(this.name);
     if (actions == null) return {};
     const x = (actions as CourseActions).resolve(opts);
-    delete x.store;
+    delete (x as any).store;
     return x;
   }
 
@@ -868,6 +901,20 @@ export class CourseStore extends Store<CourseState> {
       }
     }
     return v;
+  }
+
+  public get_copy_parallel(): number {
+    const n = this.getIn(["settings", "copy_parallel"]) ?? PARALLEL_DEFAULT;
+    if (n < 1) return 1;
+    if (n > MAX_COPY_PARALLEL) return MAX_COPY_PARALLEL;
+    return n;
+  }
+
+  public get_nbgrader_parallel(): number {
+    const n = this.getIn(["settings", "nbgrader_parallel"]) ?? PARALLEL_DEFAULT;
+    if (n < 1) return 1;
+    if (n > 50) return 50;
+    return n;
   }
 }
 

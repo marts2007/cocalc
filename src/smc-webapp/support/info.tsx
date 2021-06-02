@@ -5,7 +5,7 @@
 import { React, useActions, useTypedRedux } from "../app-framework";
 import { Alert, Button } from "../antd-bootstrap";
 import { A, Icon, Loading } from "../r_misc";
-import { HelpEmailLink, SiteName } from "../customize";
+import { HelpEmailLink } from "../customize";
 import { location } from "./util";
 import { DISCORD_INVITE } from "smc-util/theme";
 
@@ -15,6 +15,7 @@ export const SupportInfo: React.FC = () => {
   const project_title = useTypedRedux("support", "project_title");
   const status = useTypedRedux("support", "status");
   const actions = useActions("support");
+  const hide_extra_info = useTypedRedux("support", "hide_extra_info");
 
   function render_error() {
     return (
@@ -55,15 +56,39 @@ export const SupportInfo: React.FC = () => {
   }
 
   function render_default() {
+    const how = (
+      <p>
+        After submitting a ticket, you{"'"}ll receive a link, which you should
+        save until you receive a confirmation email. You can also check the
+        status of your ticket under "Support" in your account settings. We
+        typically respond to support requests from paying customers very
+        quickly.{" "}
+        <i>
+          NOTE: unless you have specifically purchased a support contract, we
+          are under no contractual obligation to respond to support requests,
+          and reserve the right to close them unanswered.
+        </i>
+      </p>
+    );
+    if (hide_extra_info) return how;
     let what;
     const title = project_title;
+    const bugs = (
+      <b>
+        We want to know about{" "}
+        <A href="https://github.com/sagemathinc/cocalc/issues?q=is%3Aissue+is%3Aopen+label%3AI-bug">
+          every bug in CoCalc!
+        </A>
+      </b>
+    );
+
     if (title != null) {
       const loc = location();
       const fn = loc.slice(47); // / projects / uuid /
       what = (
         <p>
           If you have a problem involving <code>"{fn}"</code> in the project{" "}
-          <code>"{title}"</code>, please create a support ticket below.
+          <code>"{title}"</code>, please create a support ticket below. {bugs}
         </p>
       );
     } else {
@@ -72,93 +97,66 @@ export const SupportInfo: React.FC = () => {
           If you have a problem involving a specific project or file, close this
           dialog, navigate to that file, then click on <Icon name="medkit" /> in
           the top right corner to open it again. Otherwise, please fill out this
-          form.
+          form. {bugs}
         </p>
       );
     }
     return (
       <div>
-        <h2 style={{ marginTop: "-5px" }}>Frequent questions</h2>
+        <h2 style={{ marginTop: "-5px" }}>Information</h2>
         <ul>
           <li>
-            <a href="https://doc.cocalc.com" target="_blank" rel="noopener">
+            <A href="https://doc.cocalc.com">
               <b>
-                <SiteName /> Documentation and help
+                CoCalc Documentation and help
               </b>
-            </a>
+            </A>
           </li>
           <li>
-            <a
-              target="_blank"
-              rel="noopener"
-              href="https://doc.cocalc.com/subscriptions.html#what-if-your-subscription-does-not-seem-to-do-anything"
-            >
-              Subscription problems
-            </a>
+            <A href="https://github.com/sagemathinc/cocalc-desktop#readme">
+              Try CoCalc Desktop, which may help address performance and
+              compatibility issues with cocalc.com...
+            </A>
           </li>
           <li>
-            <a
-              target="_blank"
-              rel="noopener"
-              href="https://doc.cocalc.com/howto/missing-project.html"
-            >
-              File or project seems gone
-            </a>
+            <A href="https://doc.cocalc.com/howto/missing-project.html">
+              File or project gone?
+            </A>
           </li>
           <li>
             Jupyter notebook or SageMath worksheet{" "}
-            <a
-              target="_blank"
-              rel="noopener"
-              href="https://doc.cocalc.com/howto/slow-worksheet.html"
-            >
-              slow
-            </a>{" "}
+            <A href="https://doc.cocalc.com/howto/slow-worksheet.html">slow</A>{" "}
             or{" "}
-            <a
-              target="_blank"
-              rel="noopener"
-              href="https://doc.cocalc.com/howto/jupyter-kernel-terminated.html"
-            >
-              crashing
-            </a>
+            <A href="https://doc.cocalc.com/howto/jupyter-kernel-terminated.html">
+              crashing?
+            </A>
           </li>
           <li>
-            <a
-              target="_blank"
-              rel="noopener"
-              href="https://doc.cocalc.com/howto/sage-question.html"
-            >
-              Questions about SageMath
-            </a>
-          </li>
-          <li>
-            <b>Trying to sign out:</b> Click on Account on the top right, then
-            click "Sign out..." in Preferences.
+            <A href="https://doc.cocalc.com/howto/sage-question.html">
+              Questions about SageMath?
+            </A>
           </li>
           <li>
             <b>
               Hit a bug, just need to talk with us, or request that we install
               software:
             </b>{" "}
-            Fill out the form below...
+            Create a support ticket below...
           </li>
           <li>
-            Just <b>want to chat</b> with somebody? Visit{" "}
-            <A href={DISCORD_INVITE}>our Discord server</A>.
+            Just <b>want to quickly chat</b>? Visit{" "}
+            <A href={DISCORD_INVITE}>the CoCalc Discord server</A>!
           </li>
         </ul>
 
         <h2>Create a support ticket</h2>
+        <p>
+          <b>NOTE:</b> Support is in English and German only.
+        </p>
 
         {what}
-        <p>
-          After submitting a ticket, you{"'"}ll receive a link, which you should
-          save until you receive a confirmation email. You can also check the
-          status of your ticket under "Support" in your account settings. We
-          typically respond to support requests from paying customers very
-          quickly.
-        </p>
+
+        {how}
       </div>
     );
   }

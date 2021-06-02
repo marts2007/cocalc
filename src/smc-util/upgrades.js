@@ -15,13 +15,24 @@ function get_total_upgrades(stripe_subscriptions_data) {
   if (subs == null) {
     return {};
   }
-  let total = {};
+  // always running isn't in any of the subscriptions and I don't want to edit benefits
+  // for all of them, so just put a zero 0 (since this whole old upgrades thing
+  // will eventually go away). https://github.com/sagemathinc/cocalc/issues/4802
+  let total = { always_running: 0 };
   for (let sub of subs) {
+    if (sub.status != "active" && sub.status != "trialing") {
+      // not yet paid for or no longer available.
+      continue;
+    }
+    const info = PROJECT_UPGRADES.subscription[sub.plan.id.split("-")[0]];
+    if (info == null) {
+      // there are now some subscriptions that have nothing to do with "upgrades" (e.g., for licenses).
+      continue;
+    }
+    const benefits = info.benefits;
+    // TODO: add a quantity third field to map_sum to make this not so naive...
     for (let q = 0; q < sub.quantity; q++) {
-      total = misc.map_sum(
-        total,
-        PROJECT_UPGRADES.subscription[sub.plan.id.split("-")[0]].benefits
-      );
+      total = misc.map_sum(total, benefits);
     }
   }
   return total;

@@ -25,6 +25,7 @@ import { alert_message } from "../alerts";
 import { webapp_client } from "../webapp-client";
 import { init as init_chat } from "../chat/register";
 import { normalize } from "./utils";
+import { ensure_project_running } from "./project-start-warning";
 
 const { local_storage } = require("../editor");
 //import { local_storage } from "../editor";
@@ -51,6 +52,7 @@ export async function open_file(
     actions.open_directory(opts.path);
     return;
   }
+
   opts = defaults(opts, {
     path: required,
     foreground: true,
@@ -63,34 +65,13 @@ export async function open_file(
     anchor: undefined,
   });
   opts.path = normalize(opts.path);
-  try {
-    // Unfortunately (it adds a roundtrip to the server), we **have** to do this
-    // due to https://github.com/sagemathinc/cocalc/issues/4732 until we actually
-    // genuinely implement symlink support.  Otherwise bad things happen.  Much of
-    // cocalc was implemented basically assuming links don't exist; it's not easy
-    // to change that!
-    const realpath = await webapp_client.project_client.realpath({
-      project_id: actions.project_id,
-      path: opts.path,
-    });
-    if (opts.path != realpath) {
-      alert_message({
-        type: "info",
-        message: `Opening realpath "${realpath}" instead, since filesystem links are not fully supported.`,
-        timeout: 15,
-      });
-      opts.path = realpath;
-    }
-  } catch (_) {
-    // TODO: old projects will not have the new realpath api call -- can delete this try/catch at some point.
-  }
-  const ext = filename_extension_notilde(opts.path).toLowerCase();
+
+  const is_kiosk = () =>
+    !opts.ignore_kiosk &&
+    (redux.getStore("page") as any).get("fullscreen") === "kiosk";
 
   // intercept any requests if in kiosk mode
-  if (
-    !opts.ignore_kiosk &&
-    (redux.getStore("page") as any).get("fullscreen") === "kiosk"
-  ) {
+  if (is_kiosk()) {
     alert_message({
       type: "error",
       message: `CoCalc is in Kiosk mode, so you may not open new files.  Please try visiting ${document.location.origin} directly.`,
@@ -102,7 +83,9 @@ export async function open_file(
   if (opts.new_browser_window) {
     // options other than path are ignored in this case.
     // TODO: do not ignore anchor option.
-    actions.open_in_new_browser_window(opts.path);
+    // if there is no path, we open the entire project and want to show the tabs – unless in kiosk mode
+    const fullscreen = is_kiosk() ? "kiosk" : opts.path ? "default" : "";
+    actions.open_in_new_browser_window(opts.path, fullscreen);
     return;
   }
 
@@ -114,10 +97,51 @@ export async function open_file(
   let open_files = store.get("open_files");
   if (!open_files.has(opts.path)) {
     // Make the visible tab appear ASAP, even though
-    // some stuff that may await below needs to happen...
+    // some stuff that may await below needs to happen.
+    // E.g., if the user elects not to start the project, or
+    // we have to resolve a symlink instead, then we *fix*
+    // that below!  This makes things fast and predictable
+    // usually.
     if (!actions.open_files) return; // closed
     actions.open_files.set(opts.path, "component", {});
   }
+
+  if (
+    !(await ensure_project_running(
+      actions.project_id,
+      `open the file '${opts.path}'`
+    ))
+  ) {
+    if (!actions.open_files) return; // closed
+    actions.open_files.delete(opts.path);
+    return;
+  }
+
+  try {
+    // Unfortunately (it adds a roundtrip to the server), we **have** to do this
+    // due to https://github.com/sagemathinc/cocalc/issues/4732 until we actually
+    // genuinely implement symlink support.  Otherwise bad things happen.  Much of
+    // cocalc was implemented basically assuming links don't exist; it's not easy
+    // to change that!
+    const realpath = await webapp_client.project_client.realpath({
+      project_id: actions.project_id,
+      path: opts.path,
+    });
+    if (opts.path != realpath) {
+      if (!actions.open_files) return; // closed
+      alert_message({
+        type: "info",
+        message: `Opening realpath "${realpath}" instead, since filesystem links are not fully supported.`,
+        timeout: 15,
+      });
+      actions.open_files.delete(opts.path);
+      opts.path = realpath;
+      actions.open_files.set(opts.path, "component", {});
+    }
+  } catch (_) {
+    // TODO: old projects will not have the new realpath api call -- can delete this try/catch at some point.
+  }
+  let ext = filename_extension_notilde(opts.path).toLowerCase();
 
   // Returns true if the project is closed or the file tab is now closed.
   function is_closed(): boolean {
@@ -186,7 +210,6 @@ export async function open_file(
   }
 
   if (!is_public) {
-    log_file_open(actions.project_id, opts.path);
     get_side_chat_state(actions.project_id, opts);
   }
 
@@ -350,7 +373,15 @@ async function convert_sagenb_worksheet(
 
 const log_open_time: { [path: string]: { id: string; start: Date } } = {};
 
-function log_file_open(project_id: string, path: string): void {
+export function log_file_open(project_id: string, path: string): void {
+  // Only do this if the file isn't
+  // deleted, since if it *is* deleted, then user sees a dialog
+  // and we only log the open if they select to recreate the file.
+  // See https://github.com/sagemathinc/cocalc/issues/4720
+  if (webapp_client.file_client.is_deleted(path, project_id)) {
+    return;
+  }
+
   redux.getActions("file_use")?.mark_file(project_id, path, "open");
   const actions = redux.getProjectActions(project_id);
   const id = actions.log({

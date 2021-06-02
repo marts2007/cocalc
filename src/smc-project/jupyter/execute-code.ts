@@ -13,8 +13,15 @@ TODO: for easy testing/debugging, at an "async run() : Messages[]" method.
 import { callback, delay } from "awaiting";
 import { EventEmitter } from "events";
 import { JupyterKernel, VERSION } from "./jupyter";
+import { MessageType } from "@nteract/messaging";
 
-import { uuid, trunc, deep_copy, copy_with } from "../smc-util/misc2";
+import {
+  bind_methods,
+  copy_with,
+  deep_copy,
+  uuid,
+  trunc,
+} from "../smc-util/misc";
 
 import {
   CodeExecutionEmitterInterface,
@@ -24,21 +31,26 @@ import {
 
 type State = "init" | "closed" | "running";
 
-export class CodeExecutionEmitter extends EventEmitter
+export class CodeExecutionEmitter
+  extends EventEmitter
   implements CodeExecutionEmitterInterface {
   readonly kernel: JupyterKernel;
   readonly code: string;
   readonly id?: string;
   readonly stdin?: StdinFunction;
   readonly halt_on_error: boolean;
+  // DO NOT set iopub_done or shell_done directly; instead
+  // set them using the function set_shell_done and set_iopub_done.
+  // This ensures that we call _finish when both vars have been set.
   private iopub_done: boolean = false;
   private shell_done: boolean = false;
   private state: State = "init";
   private all_output: object[] = [];
   private _message: any;
-  private _go_cb: Function;
+  private _go_cb: Function | undefined = undefined;
   private timeout_ms?: number;
-  private killing: boolean = false;
+  private timer?: any;
+  private killing: string = "";
 
   constructor(kernel: JupyterKernel, opts: ExecOpts) {
     super();
@@ -49,12 +61,16 @@ export class CodeExecutionEmitter extends EventEmitter
     this.halt_on_error = !!opts.halt_on_error;
     this.timeout_ms = opts.timeout_ms;
     this._message = {
+      parent_header: {},
+      metadata: {},
+      channel: "shell",
       header: {
         msg_id: `execute_${uuid()}`,
         username: "",
         session: "",
-        msg_type: "execute_request",
+        msg_type: "execute_request" as MessageType,
         version: VERSION,
+        date: new Date().toISOString(),
       },
       content: {
         code: this.code,
@@ -65,12 +81,7 @@ export class CodeExecutionEmitter extends EventEmitter
       },
     };
 
-    this._go = this._go.bind(this);
-    this._handle_stdin = this._handle_stdin.bind(this);
-    this._handle_shell = this._handle_shell.bind(this);
-    this._handle_iopub = this._handle_iopub.bind(this);
-    this._push_mesg = this._push_mesg.bind(this);
-    this._finish = this._finish.bind(this);
+    bind_methods(this);
   }
 
   // Emits a valid result
@@ -90,6 +101,10 @@ export class CodeExecutionEmitter extends EventEmitter
 
   close(): void {
     if (this.state == "closed") return;
+    if (this.timer != null) {
+      clearTimeout(this.timer);
+      delete this.timer;
+    }
     this.state = "closed";
     this.emit("closed");
     this.removeAllListeners();
@@ -124,20 +139,23 @@ export class CodeExecutionEmitter extends EventEmitter
     }
     dbg(`STDIN client --> server ${JSON.stringify(response)}`);
     const m = {
+      channel: "stdin",
       parent_header: this._message.header,
+      metadata: {},
       header: {
         msg_id: uuid(), // this._message.header.msg_id
         username: "",
         session: "",
-        msg_type: "input_reply",
+        msg_type: "input_reply" as MessageType,
         version: VERSION,
+        date: new Date().toISOString(),
       },
       content: {
         value: response,
       },
     };
     dbg(`STDIN server --> kernel: ${JSON.stringify(m)}`);
-    this.kernel._channels.stdin.next(m);
+    this.kernel.channel?.next(m);
   }
 
   _handle_shell(mesg: any): void {
@@ -146,29 +164,42 @@ export class CodeExecutionEmitter extends EventEmitter
     }
     const dbg = this.kernel.dbg("_handle_shell");
     dbg(`got SHELL message -- ${JSON.stringify(mesg)}`);
-    if ((mesg.content != null ? mesg.content.status : undefined) === "error") {
+    if (mesg.content?.status == "error" || mesg.content?.status == "abort") {
+      // NOTE: I'm adding support for "abort" status, since I was just reading
+      // the kernel docs and it exists but is deprecated.  Some old kernels
+      // might use it and we should thus properly support it:
+      // https://jupyter-client.readthedocs.io/en/stable/messaging.html#request-reply
       if (this.halt_on_error) {
-        this.kernel._clear_execute_code_queue();
+        this.kernel.clear_execute_code_queue();
       }
-      // just bail; actual error would have been reported on iopub channel, hopefully.
-      this._finish();
-    } else {
+      this.set_shell_done(true);
+    } else if (mesg.content?.status == "ok") {
       this._push_mesg(mesg);
-      this.shell_done = true;
-      if (this.iopub_done && this.shell_done) {
-        this._finish();
-      }
+      this.set_shell_done(true);
+    }
+  }
+
+  private set_shell_done(value: boolean): void {
+    this.shell_done = value;
+    if (this.iopub_done && this.shell_done) {
+      this._finish();
+    }
+  }
+
+  private set_iopub_done(value: boolean): void {
+    this.iopub_done = value;
+    if (this.iopub_done && this.shell_done) {
+      this._finish();
     }
   }
 
   _handle_iopub(mesg: any): void {
     if (mesg.parent_header.msg_id !== this._message.header.msg_id) {
+      // iopub message for a different execute request so ignore it.
       return;
     }
     const dbg = this.kernel.dbg("_handle_iopub");
     dbg(`got IOPUB message -- ${JSON.stringify(mesg)}`);
-
-    this.iopub_done = this.killing || mesg.content?.execution_state == "idle";
 
     if (mesg.content?.comm_id != null) {
       // A comm message that is a result of execution of this code.
@@ -180,9 +211,17 @@ export class CodeExecutionEmitter extends EventEmitter
       this._push_mesg(mesg);
     }
 
-    if (this.iopub_done && this.shell_done) {
-      this._finish();
-    }
+    this.set_iopub_done(
+      !!this.killing || mesg.content?.execution_state == "idle"
+    );
+  }
+
+  // Called if the kernel is closed for some reason, e.g., crashing.
+  private handle_closed(): void {
+    const dbg = this.kernel.dbg("CodeExecutionEmitter.handle_closed");
+    dbg("kernel closed");
+    this.killing = "kernel crashed";
+    this._finish();
   }
 
   _finish(): void {
@@ -198,11 +237,18 @@ export class CodeExecutionEmitter extends EventEmitter
       this.kernel._execute_code_queue.shift(); // finished
       this.kernel._process_execute_code_queue(); // start next exec
     }
+    this.kernel.removeListener("close", this.handle_closed);
     this._push_mesg({ done: true });
     this.close();
-    if (this._go_cb !== undefined) {
-      this._go_cb();
-    }
+
+    // Finally call the callback that was setup in this._go.
+    // This is what makes it possible to await on the entire
+    // execution.  Also it is important to explicitly
+    // signal an error if we had to kill execution due
+    // to hitting a timeout, since the kernel may or may
+    // not have randomly done so itself in output.
+    this._go_cb?.(this.killing);
+    this._go_cb = undefined;
   }
 
   _push_mesg(mesg): void {
@@ -250,11 +296,13 @@ export class CodeExecutionEmitter extends EventEmitter
     this.kernel.on("iopub", this._handle_iopub);
 
     dbg("send the message to get things rolling");
-    this.kernel._channels.shell.next(this._message);
+    this.kernel.channel?.next(this._message);
+
+    this.kernel.on("closed", this.handle_closed);
 
     if (this.timeout_ms) {
       // setup a timeout at which point things will get killed if they don't finish
-      setTimeout(this.timeout.bind(this), this.timeout_ms);
+      this.timer = setTimeout(this.timeout, this.timeout_ms);
     }
   }
 
@@ -264,7 +312,10 @@ export class CodeExecutionEmitter extends EventEmitter
       dbg("already finished, so nothing to worry about");
       return;
     }
-    this.killing = true;
+    this.killing =
+      "Timeout Error: execution time limit = " +
+      Math.round((this.timeout_ms ?? 0) / 1000) +
+      " seconds";
     let tries = 3;
     let d = 1000;
     while (this.state != ("closed" as State) && tries > 0) {

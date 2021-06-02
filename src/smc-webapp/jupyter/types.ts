@@ -7,7 +7,7 @@ import * as immutable from "immutable";
 
 export type NotebookMode = "edit" | "escape";
 
-export type CellType = "raw" | "markdown" | "code";
+export type CellType = "raw" | "markdown" | "code" | "multi";
 
 export type Scroll =
   | number
@@ -29,3 +29,27 @@ export type CellToolbarName =
 
 // TODO -- this is pretty complicated, but will ne nice to nail down.
 export type Cell = immutable.Map<string, any>;
+
+export type Cells = immutable.Map<string, Cell>;
+
+export interface Usage {
+  mem: number; // MiB
+  mem_limit: number;
+  mem_alert: AlertLevel;
+  mem_pct: number; // %
+  cpu: number; // 1 core = 100%
+  cpu_runtime: number; // seconds, wall-time (not cpu time)
+  cpu_limit: number;
+  cpu_alert: AlertLevel;
+  cpu_pct: number; // 100% full container quota
+  time_alert: AlertLevel;
+}
+
+export type AlertLevel = "low" | "mid" | "high" | "none";
+
+export type BackendState =
+  | "init"
+  | "ready"
+  | "spawning"
+  | "starting"
+  | "running";

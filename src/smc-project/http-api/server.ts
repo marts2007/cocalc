@@ -17,8 +17,7 @@ const MAX_REQUESTS_PER_MINUTE = 50;
 import * as express from "express";
 import { writeFile } from "fs";
 import { callback } from "awaiting";
-import { meta_file } from "../smc-util/misc";
-import { endswith, split } from "../smc-util/misc2";
+import { endswith, split, meta_file } from "../smc-util/misc";
 import { json, urlencoded } from "body-parser";
 
 const { free_port } = require("../../smc-util-node/misc_node");
@@ -53,7 +52,7 @@ export async function start_server(opts: ServerOpts): Promise<void> {
 
   if (opts.port_path) {
     dbg(`writing port to file "${opts.port_path}"`);
-    await callback(writeFile, opts.port_path, opts.port);
+    await callback(writeFile, opts.port_path, opts.port+"");
   }
 
   // TODO/RANT: I cannot figure out how to catch an error

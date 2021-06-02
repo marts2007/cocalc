@@ -17,12 +17,14 @@ interface QueryOpts {
   select?: string[];
   set?: string;
   jsonb_set?: object;
+  jsonb_merge?: object;
   table?: string;
   where?: QueryWhere;
   one?: boolean; // if true get back one result; if false get list of all results.
   order_by?: string;
   limit?: number;
   params?: any[];
+  timeout_s?: number;
 }
 
 export async function query(opts: QueryOpts): Promise<any> {
@@ -35,9 +37,11 @@ export async function query(opts: QueryOpts): Promise<any> {
     opts.set,
     opts.query,
     opts.jsonb_set,
+    opts.jsonb_merge,
     opts.order_by,
     opts.limit,
-    opts.params
+    opts.params,
+    opts.timeout_s
   );
 }
 
@@ -49,9 +53,11 @@ function all_query(
   set,
   query,
   jsonb_set,
+  jsonb_merge,
   order_by,
   limit,
   params,
+  timeout_s,
   cb
 ): void {
   db._query({
@@ -61,9 +67,11 @@ function all_query(
     set,
     query,
     jsonb_set,
+    jsonb_merge,
     order_by,
     limit,
     params,
+    timeout_s,
     cb: all_results(cb),
   });
 }
@@ -76,9 +84,11 @@ function one_query(
   set,
   query,
   jsonb_set,
+  jsonb_merge,
   order_by,
   limit,
   params,
+  timeout_s,
   cb
 ): void {
   db._query({
@@ -88,9 +98,11 @@ function one_query(
     set,
     query,
     jsonb_set,
+    jsonb_merge,
     order_by,
     limit,
     params,
+    timeout_s,
     cb: one_result(cb),
   });
 }

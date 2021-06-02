@@ -4,16 +4,14 @@
  */
 
 import { Component, Rendered, React } from "../app-framework";
-
 import { Loading, Space, Icon } from "../r_misc";
-
-const { Button } = require("react-bootstrap");
-
+import { Button } from "../antd-bootstrap";
 import { retry_until_success } from "smc-util/async-utils";
+import { open_new_tab } from "../misc-page";
 
 interface Props {
   href?: string;
-  get_href: () => Promise<string>; // optional async function that determines url
+  get_href?: () => Promise<string>; // optional async function that determines url
   mode: "link" | "button";
 }
 
@@ -52,7 +50,6 @@ export class LinkRetryUntilSuccess extends Component<Props, State> {
 
   open(): void {
     // open_new_tab takes care of blocked popups -- https://github.com/sagemathinc/cocalc/issues/2599
-    const { open_new_tab } = require("smc-webapp/misc_page");
     open_new_tab(this.url);
   }
 

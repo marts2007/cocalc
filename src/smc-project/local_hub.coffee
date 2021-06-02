@@ -14,7 +14,12 @@ that it simultaneously manages numerous sessions, since simultaneously
 doing a lot of IO-based things is what Node.JS is good at.
 ###
 
-require('ts-node').register(project:"#{__dirname}/tsconfig.json", cacheDirectory:'/tmp')
+{program, do_not_laod_transpilers} = require('./init-program')
+
+if do_not_laod_transpilers
+    console.warn("ts-node transpiler is not enabled!")
+else
+    require('ts-node').register(project:"#{__dirname}/tsconfig.json", cacheDirectory:'/tmp')
 
 path    = require('path')
 async   = require('async')
@@ -24,7 +29,6 @@ net     = require('net')
 uuid    = require('uuid')
 winston = require('winston')
 request = require('request')
-program = require('commander')          # command line arguments -- https://github.com/visionmedia/commander.js/
 
 init_gitconfig = require('./gitconfig').init_gitconfig
 
@@ -79,10 +83,6 @@ secret_token = require('./secret_token')
 
 start_api_server = require('./http-api/server').start_server
 
-# Console sessions
-console_session_manager = require('./console_session_manager')
-console_sessions = new console_session_manager.ConsoleSessions()
-
 # Ports for the various servers
 port_manager = require('./port_manager')
 
@@ -98,6 +98,12 @@ jupyter_manager = require('./jupyter_manager')
 # Saving blobs to a hub
 blobs = require('./blobs')
 
+# Tame processes if they use a lot of CPU
+autorenice = require('./autorenice')
+
+# configure the project hub based on how it is run
+project_setup = require('./project-setup')
+
 # Client for connecting back to a hub
 {Client} = require('./client')
 
@@ -112,11 +118,13 @@ if process.env.SMC_LOCAL_HUB_HOME?
 if not process.env.SMC?
     process.env.SMC = path.join(process.env.HOME, '.smc')
 
-SMC = process.env.SMC
+SMC = if program.test then '/tmp' else process.env.SMC
 
 process.chdir(process.env.HOME)
 
 DATA = path.join(SMC, 'local_hub')
+
+winston.debug("DATA='#{DATA}'")
 
 # See https://github.com/sagemathinc/cocalc/issues/174 -- some stupid (?)
 # code sometimes assumes this exists, and it's not so hard to just ensure
@@ -175,23 +183,10 @@ connect_to_session = (socket, mesg) ->
     winston.debug("connect_to_session -- type='#{mesg.type}'")
     switch mesg.type
         when 'console'
-            console_sessions.connect(socket, mesg)
+            throw Error("Console Unsupported")
         else
             err = message.error(id:mesg.id, error:"Unsupported session type '#{mesg.type}'")
             socket.write_mesg('json', err)
-
-# Kill an existing session.
-terminate_session = (socket, mesg) ->
-    cb = (err) ->
-        if err
-            mesg = message.error(id:mesg.id, error:err)
-        socket.write_mesg('json', mesg)
-
-    sid = mesg.session_uuid
-    if console_sessions.session_exists(sid)
-        console_sessions.terminate_session(sid, cb)
-    else
-        cb()
 
 # Handle a message from the hub
 handle_mesg = (socket, mesg, handler) ->
@@ -228,7 +223,7 @@ handle_mesg = (socket, mesg, handler) ->
                 # send back confirmation that a signal was sent
                 socket.write_mesg('json', message.signal_sent(id:mesg.id))
         when 'terminate_session'
-            terminate_session(socket, mesg)
+            throw Error("'terminate_session' unsupported")
         when 'save_blob'
             blobs.handle_save_blob_message(mesg)
         when 'error'
@@ -249,7 +244,7 @@ handle_mesg = (socket, mesg, handler) ->
 
 ###
 Use exports.client object below to work with the local_hub
-interactively for debugging purposes when developing SMC in an SMC project.
+interactively for debugging purposes when developing CoCalc in an CoCalc project.
 
 1. Cd to the directory of the project, e.g.,
     /projects/45f4aab5-7698-4ac8-9f63-9fd307401ad7/smc/src/data/projects/f821cc2a-a6a2-4c3d-89a7-bcc6de780ebb
@@ -307,13 +302,11 @@ start_tcp_server = (secret_token, port, cb) ->
             cb(err)
         else
             winston.info("tcp_server listening 0.0.0.0:#{server.address().port}")
-            fs.writeFile(port_file, server.address().port, cb)
+            fs.writeFile(port_file, server.address().port + "", cb)
 
 # Start listening for connections on the socket.
 start_server = (tcp_port, raw_port, cb) ->
     the_secret_token = undefined
-    if program.console_port
-        console_sessions.set_port(program.console_port)
 
     # We run init_info_json to determine the INFO variable.
     # However, we do NOT wait for the cb of init_info_json to be called, since we don't care in this process that the file info.json was written.
@@ -338,7 +331,7 @@ start_server = (tcp_port, raw_port, cb) ->
                 cb         : cb
         (cb) ->
             if program.kucalc
-                # not needed, since in kucalc supervisord manages processes.
+                # not needed in kucalc
                 cb()
                 return
             # This is also written by forever; however, by writing it directly it's also possible
@@ -346,14 +339,16 @@ start_server = (tcp_port, raw_port, cb) ->
             fs.writeFile(misc_node.abspath("#{DATA}/local_hub.pid"), "#{process.pid}", cb)
         (cb) ->
             winston.debug("initializing secret token...")
-            secret_token.init_secret_token (err, token) ->
-                if err
-                    cb(err)
-                else
-                    the_secret_token = token
-                    console_sessions.set_secret_token(token)
-                    exports.client.secret_token = token
-                    cb()
+            if program.test
+                exports.client.secret_token = "1234567890"
+            else
+                secret_token.init_secret_token (err, token) ->
+                    if err
+                        cb(err)
+                    else
+                        the_secret_token = token
+                        exports.client.secret_token = token
+                        cb()
         (cb) ->
             winston.debug("start API server...")
             try
@@ -364,6 +359,10 @@ start_server = (tcp_port, raw_port, cb) ->
         (cb) ->
             winston.debug("starting tcp server...")
             start_tcp_server(the_secret_token, tcp_port, cb)
+        (cb) ->
+            if program.kucalc
+                project_setup.finalize_kucalc_setup()
+            cb()
     ], (err) ->
         if err
             winston.debug("ERROR starting server -- #{err}")
@@ -373,42 +372,12 @@ start_server = (tcp_port, raw_port, cb) ->
         cb(err)
     )
 
-# Contains additional environment variables. Base 64 encoded JSON of {[key:string]:string}.
-set_extra_env = ->
-    if not process.env.COCALC_EXTRA_ENV
-        winston.debug("set_extra_env: nothing provided")
-        return
-    try
-        env64 = process.env.COCALC_EXTRA_ENV
-        raw = Buffer.from(env64, 'base64').toString('utf8')
-        winston.debug("set_extra_env: #{raw}")
-        data = JSON.parse(raw)
-        if typeof data == 'object'
-            for k, v of data
-                if typeof v != 'string' or v.length == 0
-                    winston.debug("set_extra_env: ignoring key #{k}, value is not a string or length 0")
-                    continue
-                process.env[k] = v
-    catch err
-        # we report and ignore errors
-        winston.debug("ERROR set_extra_env -- cannot process '#{process.env.COCALC_EXTRA_ENV}' -- #{err}")
-
-program.usage('[?] [options]')
-    .option('--tcp_port <n>', 'TCP server port to listen on (default: 0 = os assigned)', ((n)->parseInt(n)), 0)
-    .option('--raw_port <n>', 'RAW server port to listen on (default: 0 = os assigned)', ((n)->parseInt(n)), 0)
-    .option('--console_port <n>', 'port to find console server on (optional; uses port file if not given); if this is set we assume some other system is managing the console server and do not try to start it -- just assume it is listening on this port always', ((n)->parseInt(n)), 0)
-    .option('--kucalc', "Running in the kucalc environment")
-    .option('--test_firewall', 'Abort and exit w/ code 99 if internal GCE information is accessible')
-    .option('--test', "Start up everything, then immediately exit.  Used as a test and to ensure coffeescript and typescript is compiled/cache")
-    .parse(process.argv)
+# Final steps: kucalc specific setup, environment variable cleanup, and then we issue the "start_server" command …
 
 if program.kucalc
     winston.debug("running in kucalc")
     kucalc.IN_KUCALC = true
-    # clean environment to get rid of nvm and other variables
-    process.env.PATH = process.env.PATH.split(':').filter(((x) -> not x.startsWith('/cocalc/nvm'))).join(':')
-    for name in ['NODE_PATH', 'NODE_ENV', 'NODE_VERSION', 'NVM_CD_FLAGS', 'NVM_DIR', 'NVM_BIN']
-        delete process.env[name]
+    project_setup.cleanup()
 
     if program.test_firewall
         kucalc.init_gce_firewall_test(winston)
@@ -416,12 +385,21 @@ else
     winston.debug("NOT running in kucalc")
     kucalc.IN_KUCALC = false
 
-set_extra_env()
+if process.env.COCALC_PROJECT_AUTORENICE? or program.kucalc
+    autorenice.activate(process.env.COCALC_PROJECT_AUTORENICE)
+
+# this is only relevant for kucalc
+project_setup.configure()
+project_setup.set_extra_env()
 
 start_server program.tcp_port, program.raw_port, (err) ->
     if err
         process.exit(1)
-    if program.test
+
+if program.test
+    winston.debug("Test mode -- waiting 10 seconds")
+    setTimeout ->
         winston.debug("Test mode -- now exiting")
         process.exit(0)
+    , 10000
 

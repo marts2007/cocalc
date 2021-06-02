@@ -28,50 +28,24 @@ export { WindowedList } from "./windowed-list";
 export { UncommittedChanges } from "./uncommited-changes";
 export { DateTimePicker } from "./date-time-picker";
 export { PathLink } from "./path-link";
-
-export const {
-  MarkdownInput,
-  UNIT,
-  BS_BLUE_BGRND,
-  COLORS,
-  ImmutablePureRenderMixin,
-  SetIntervalMixin,
-  SetIntervalHOC,
-  Octicon,
-  Footer,
-  render_static_footer,
-  HelpIcon,
-  is_different_date,
-  TimeAgoElement,
-  TimeAgo,
-  SearchInput,
-  HTML,
-  Markdown,
-  ActivityDisplay,
-  SaveButton,
-  Calendar,
-  DeletedProjectWarning,
-  course_warning,
-  CourseProjectExtraHelp,
-  CourseProjectWarning,
-  NonMemberProjectWarning,
-  NoNetworkProjectWarning,
-  LoginLink,
-  ProjectState,
-  EditorFileInfoDropdown,
-  render_file_info_dropdown,
-  UPGRADE_ERROR_STYLE,
-  NoUpgrades,
-  UpgradeAdjustor,
-  CopyToClipBoard,
+export { HelpIcon } from "./help-icon";
+export { TimeAgo, TimeAgoElement, is_different_date } from "./time-ago";
+export {
   HiddenXS,
   HiddenSM,
   HiddenXSSM,
   VisibleMDLG,
   VisibleLG,
   VisibleXSSM,
-  ErrorBoundary,
-  smc_version,
-  build_date,
-  smc_git_rev,
-} = require("./old-coffee-code-index");
+} from "./hidden-visible";
+export { LoginLink } from "./login-link";
+export { ProjectState } from "./project-state";
+export { UNIT, build_date, smc_git_rev, smc_version } from "./constants";
+export { MarkdownInput } from "../widget-markdown-input/main";
+export { SearchInput } from "./search-input";
+export { ActivityDisplay } from "./activity-display";
+export { CopyToClipBoard } from "./copy-to-clipboard";
+export { UpgradeAdjustor, UPGRADE_ERROR_STYLE } from "./upgrade-adjustor";
+export { HTML } from "./html";
+export { Markdown } from "./markdown";
+export * from "./table-of-contents";

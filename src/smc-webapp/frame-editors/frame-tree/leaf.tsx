@@ -16,7 +16,7 @@ import { ErrorDisplay, Loading } from "../../r_misc";
 import { AvailableFeatures } from "../../project_configuration";
 
 import { Actions } from "../code-editor/actions";
-import { EditorDescription, NodeDesc } from "./types";
+import { EditorDescription, EditorState, NodeDesc } from "./types";
 
 interface Props {
   name: string;
@@ -24,7 +24,7 @@ interface Props {
   project_id: string;
   is_public: boolean;
   font_size: number;
-  editor_state: Map<string, any>;
+  editor_state: EditorState;
   active_id: string;
   editor_settings: Map<string, any>;
   terminal: Map<string, any>;
@@ -41,6 +41,14 @@ interface Props {
   is_fullscreen: boolean;
   reload?: number;
   is_subframe: boolean;
+  local_view_state: Map<string, any>;
+  // is_visible: true if the entire frame tree is visible (i.e., the tab is shown);
+  // knowing this can be critical for rendering certain types of editors, e.g.,
+  // see https://github.com/sagemathinc/cocalc/issues/5133 where xterm.js would get
+  // randomly rendered wrong if it was initialized when the div was in the DOM,
+  // but hidden.
+  is_visible: boolean;
+  tab_is_visible: boolean; // if that editor tab is active -- see page/page.tsx
 }
 
 interface ReduxProps {
@@ -123,9 +131,12 @@ class FrameTreeLeaf extends Component<Props & ReduxProps> {
           this.props.complete && this.props.complete.get(desc.get("id"))
         }
         derived_file_types={this.props.derived_file_types}
+        local_view_state={this.props.local_view_state}
         desc={desc}
         available_features={this.props.available_features}
         is_subframe={this.props.is_subframe}
+        is_visible={this.props.is_visible}
+        tab_is_visible={this.props.tab_is_visible}
       />
     );
   }
@@ -142,13 +153,12 @@ class FrameTreeLeaf extends Component<Props & ReduxProps> {
     }
     return (
       <ErrorDisplay
+        banner={true}
         error={this.props.error}
         onClose={() => this.props.editor_actions.set_error("")}
-        style={{
+        body_style={{
           maxWidth: "100%",
-          margin: "1ex",
           maxHeight: "30%",
-          overflowY: "scroll",
           fontFamily: "monospace",
           fontSize: "85%",
           whiteSpace: "pre-wrap",

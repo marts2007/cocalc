@@ -40,12 +40,9 @@ const MAX_FILE_SIZE_MB = 5;
 type XPatch = any;
 
 import { EventEmitter } from "events";
-
 import { debounce, throttle } from "lodash";
 import { Map, fromJS } from "immutable";
-
 import { delay } from "awaiting";
-
 import {
   callback2,
   cancel_scheduled,
@@ -53,31 +50,25 @@ import {
   retry_until_success,
   reuse_in_flight_methods,
 } from "../../../async-utils";
-
 import { wait } from "../../../async-wait";
-
 import {
+  assertDefined,
+  close,
   cmp_Date,
   endswith,
   filename_extension,
   keys,
   uuid,
-} from "../../../misc2";
-
-import { Evaluator } from "./evaluator";
-import { IpywidgetsState } from "./ipywidgets-state";
-
-const {
   hash_string,
   is_date,
   ISO_to_Date,
   minutes_ago,
-} = require("../../../misc");
-
-const schema = require("../../../schema");
-
+  server_minutes_ago,
+} from "../../../misc";
+import { Evaluator } from "./evaluator";
+import { IpywidgetsState } from "./ipywidgets-state";
+import * as schema from "../../../schema";
 import { SyncTable } from "../../table/synctable";
-
 import {
   Client,
   CompressedPatch,
@@ -86,11 +77,8 @@ import {
   Patch,
   FileWatcher,
 } from "./types";
-
 import { SortedPatchList } from "./sorted-patch-list";
-
 import { patch_cmp } from "./util";
-
 import { export_history, HistoryEntry, HistoryExportOptions } from "./export";
 
 export type State = "init" | "ready" | "closed";
@@ -181,7 +169,7 @@ export class SyncDoc extends EventEmitter {
 
   public ipywidgets_state?: IpywidgetsState;
 
-  private patch_list: SortedPatchList;
+  private patch_list?: SortedPatchList;
 
   private last: Document;
   private doc: Document;
@@ -223,6 +211,9 @@ export class SyncDoc extends EventEmitter {
 
   private ephemeral: boolean = false;
 
+  private sync_is_disabled: boolean = false;
+  private delay_sync_timer: any;
+
   constructor(opts: SyncOpts) {
     super();
     if (opts.string_id === undefined) {
@@ -250,6 +241,11 @@ export class SyncDoc extends EventEmitter {
       }
     }
     this._from_str = opts.from_str;
+
+    // Initialize to time when we create the syncstring, so we don't
+    // see our own cursor when we refresh the browser (before we move
+    // to update this).
+    this.cursor_last_time = this.client?.server_time();
 
     reuse_in_flight_methods(this, [
       "save",
@@ -422,11 +418,11 @@ export class SyncDoc extends EventEmitter {
   }
 
   public set_doc(doc: Document, exit_undo_mode: boolean = true): void {
-    if (exit_undo_mode) this.undo_state = undefined;
     if (doc.is_equal(this.doc)) {
       // no change.
       return;
     }
+    if (exit_undo_mode) this.undo_state = undefined;
     // console.log(`sync-doc.set_doc("${doc.to_str()}")`);
     this.doc = doc;
     this.emit_change();
@@ -483,6 +479,7 @@ export class SyncDoc extends EventEmitter {
   // If not fully initialized, will throw exception.
   public version(time?: Date): Document {
     this.assert_table_is_ready("patches");
+    assertDefined(this.patch_list);
     return this.patch_list.value(time);
   }
 
@@ -491,6 +488,7 @@ export class SyncDoc extends EventEmitter {
      used for implementing undo functionality for client editors. */
   public version_without(times: Date[]): Document {
     this.assert_table_is_ready("patches");
+    assertDefined(this.patch_list);
     return this.patch_list.value(undefined, undefined, times);
   }
 
@@ -645,12 +643,15 @@ export class SyncDoc extends EventEmitter {
      the file to disk periodically. */
   private init_project_autosave(): void {
     // Do not autosave sagews until we resolve
-    // https://github.com/sagemathinc/cocalc/issues/974
+    //   https://github.com/sagemathinc/cocalc/issues/974
+    // Similarly, do not autosave ipynb because of
+    //   https://github.com/sagemathinc/cocalc/issues/5216
     if (
       !LOCAL_HUB_AUTOSAVE_S ||
       !this.client.is_project() ||
       this.project_autosave_timer ||
-      endswith(this.path, ".sagews")
+      endswith(this.path, ".sagews") ||
+      endswith(this.path, ".ipynb.sage-jupyter2")
     ) {
       return;
     }
@@ -678,6 +679,7 @@ export class SyncDoc extends EventEmitter {
      when offline! */
   public time_sent(time: Date): Date | undefined {
     this.assert_table_is_ready("patches");
+    assertDefined(this.patch_list);
     return this.patch_list.time_sent(time);
   }
 
@@ -685,6 +687,7 @@ export class SyncDoc extends EventEmitter {
   // point in time.
   public user_id(time: Date): number {
     this.assert_table_is_ready("patches");
+    assertDefined(this.patch_list);
     return this.patch_list.user_id(time);
   }
 
@@ -749,6 +752,7 @@ export class SyncDoc extends EventEmitter {
      is sorted from oldest to newest. */
   public all_versions(): Date[] {
     this.assert_table_is_ready("patches");
+    assertDefined(this.patch_list);
     return this.patch_list.versions();
   }
 
@@ -796,13 +800,11 @@ export class SyncDoc extends EventEmitter {
       // Cancel any pending file_use calls.
       cancel_scheduled(this.throttled_file_use);
       (this.throttled_file_use as any).cancel();
-      delete this.throttled_file_use;
     }
 
     if (this.emit_change != null) {
       // Cancel any pending change emit calls.
       cancel_scheduled(this.emit_change);
-      delete this.emit_change;
     }
 
     if (this.project_autosave_timer) {
@@ -810,28 +812,22 @@ export class SyncDoc extends EventEmitter {
       this.project_autosave_timer = 0;
     }
 
-    delete this.cursor_map;
-    delete this.users;
     this.patch_update_queue = [];
 
     if (this.syncstring_table != null) {
       await this.syncstring_table.close();
-      delete this.syncstring_table;
     }
 
     if (this.patches_table != null) {
       await this.patches_table.close();
-      delete this.patches_table;
     }
 
     if (this.patch_list != null) {
       await this.patch_list.close();
-      delete this.patch_list;
     }
 
     if (this.cursors_table != null) {
       await this.cursors_table.close();
-      delete this.cursors_table;
     }
 
     if (this.client.is_project()) {
@@ -840,15 +836,14 @@ export class SyncDoc extends EventEmitter {
 
     if (this.evaluator != null) {
       await this.evaluator.close();
-      delete this.evaluator;
     }
 
     if (this.ipywidgets_state != null) {
       await this.ipywidgets_state.close();
-      delete this.ipywidgets_state;
     }
 
-    delete this.settings;
+    close(this);
+    this.set_state("closed");
   }
 
   // TODO: We **have** to do this on the client, since the backend
@@ -993,7 +988,7 @@ export class SyncDoc extends EventEmitter {
 
   // Used for internal debug logging
   private dbg(_f: string = ""): Function {
-    if (!this.client.is_project()) {
+    if (!this.client?.is_project() || this.state == "closed") {
       return (..._) => {};
     }
     return this.client.dbg(`sync-doc("${this.path}").${_f}`);
@@ -1114,12 +1109,14 @@ export class SyncDoc extends EventEmitter {
       throw Error(init.error);
     }
 
+    assertDefined(this.patch_list);
     if (this.client.is_user() && this.patch_list.count() === 0 && init.size) {
       dbg("waiting for patches for nontrivial file");
       // normally this only happens in a later event loop,
       // so force it now.
       dbg("handling patch update queue since", this.patch_list.count());
       await this.handle_patch_update_queue();
+      assertDefined(this.patch_list);
       dbg("done handling, now ", this.patch_list.count());
       if (this.patch_list.count() === 0) {
         // wait for a change -- i.e., project loading the file from
@@ -1517,6 +1514,13 @@ export class SyncDoc extends EventEmitter {
     ) {
       map = map.delete(account_id);
     }
+    // Remove any old cursors, where "old" is more than 1 minute old; this is never useful.
+    const cutoff = server_minutes_ago(1);
+    for (const [a] of map as any) {
+      if (map.getIn([a, "time"]) < cutoff) {
+        map = map.delete(a);
+      }
+    }
     return map;
   }
 
@@ -1564,12 +1568,16 @@ export class SyncDoc extends EventEmitter {
       dbg("bug -- not ready");
       throw Error("bug -- cannot save if doc and last are not initialized");
     }
-    if (this.state != "ready") {
-      // There's nothing to do regarding save if the table isn't
-      // opened yet or is already closed or closing.
+    if (this.state == "closed") {
+      // There's nothing to do regarding save if the table is
+      // already closed.  Note that we *do* have to save when
+      // the table is init stage, since the project has to
+      // record the newly opened version of the file to the
+      // database! See
+      //    https://github.com/sagemathinc/cocalc/issues/4986
+      dbg(`state=${this.state} not ready so not saving`);
       return;
     }
-    await this.patches_table.save();
     while (!this.doc.is_equal(this.last)) {
       dbg("something to save");
       this.emit("user-change");
@@ -1583,20 +1591,27 @@ export class SyncDoc extends EventEmitter {
         // and state still ready).
         continue;
       }
-      dbg("Compute new patch and send it.");
+      dbg("Compute new patch.");
       await this.sync_remote_and_doc();
       // Emit event since this syncstring was
       // changed locally (or we wouldn't have had
       // to save at all).
       if (doc.is_equal(this.doc)) {
         dbg("no change during loop -- done!");
-        return;
+        break;
       }
     }
+    // Ensure all patches are saved to backend.
+    // We do this after the above, so that creating the newest patch
+    // happens immediately on save, which makes it possible for clients
+    // to save current state without having to wait on an async, which is
+    // useful to ensure specific undo points (e.g., right before a paste).
+    await this.patches_table.save();
   }
 
   private next_patch_time(): Date {
     let time = this.client.server_time();
+    assertDefined(this.patch_list);
     const min_time = this.patch_list.newest_patch_time();
     if (min_time != null && min_time >= time) {
       time = new Date(min_time.valueOf() + 1);
@@ -1641,6 +1656,7 @@ export class SyncDoc extends EventEmitter {
     const x = this.patches_table.set(obj, "none");
     const y = this.process_patch(x, undefined, undefined, patch);
     if (y != null) {
+      assertDefined(this.patch_list);
       this.patch_list.add([y]);
     }
   }
@@ -1650,6 +1666,7 @@ export class SyncDoc extends EventEmitter {
      be the time of an existing patch.
   */
   private async snapshot(time: Date, force: boolean = false): Promise<void> {
+    assertDefined(this.patch_list);
     const x = this.patch_list.patch(time);
     if (x == null) {
       throw Error(`no patch at time ${time}`);
@@ -1750,6 +1767,7 @@ export class SyncDoc extends EventEmitter {
     const max_size = Math.floor(1.2 * MAX_FILE_SIZE_MB * 1000000);
     const interval = this.snapshot_interval;
     dbg("check if we need to make a snapshot:", { interval, max_size });
+    assertDefined(this.patch_list);
     const time = this.patch_list.time_of_unmade_periodic_snapshot(
       interval,
       max_size
@@ -1893,12 +1911,14 @@ export class SyncDoc extends EventEmitter {
         v.push(p);
       }
     });
+    assertDefined(this.patch_list);
     this.patch_list.add(v);
     this.load_full_history_done = true;
     return;
   }
 
   public show_history(opts = {}): void {
+    assertDefined(this.patch_list);
     this.patch_list.show_history(opts);
   }
 
@@ -1937,6 +1957,7 @@ export class SyncDoc extends EventEmitter {
     }
     if (oldest) {
       //dbg("oldest=#{oldest}, so check whether any snapshots need to be recomputed")
+      assertDefined(this.patch_list);
       for (const snapshot_time of this.patch_list.snapshot_times()) {
         if (snapshot_time >= oldest) {
           //console.log("recomputing snapshot #{snapshot_time}")
@@ -1970,7 +1991,9 @@ export class SyncDoc extends EventEmitter {
       this.emit("save-to-disk", time);
     }
     const dbg = this.dbg("handle_syncstring_save_state");
-    dbg();
+    dbg(
+      `state=${state}; this.syncstring_save_state=${this.syncstring_save_state}; this.state=${state}`
+    );
     if (
       this.state === "ready" &&
       this.client.is_project() &&
@@ -1983,12 +2006,39 @@ export class SyncDoc extends EventEmitter {
       // so we do it (unless of course syncstring is still
       // being initialized).
       try {
+        // Uncomment the following to test simulating a
+        // random failure in save_to_disk:
+        // if (Math.random() < 0.5) throw Error("CHAOS MONKEY!"); // FOR TESTING ONLY.
         await this.save_to_disk();
       } catch (err) {
+        // CRITICAL: we must unset this.syncstring_save_state (and set the save state);
+        // otherwise, it stays as "requested" and this if statement would never get
+        // run again, thus completely breaking saving this doc to disk.
+        // It is normal behavior that *sometimes* this.save_to_disk might
+        // throw an exception, e.g., if the file is temporarily deleted
+        // or save it called before everything is initialized, or file
+        // is temporarily set readonly, or maybe there is a filesystem error.
+        // Of course, the finally below will also take care of this.  However,
+        // it's nice to record the error here.
+        this.syncstring_save_state = "done";
+        await this.set_save({ state: "done", error: `${err}` });
         dbg(`ERROR saving to disk in handle_syncstring_save_state-- ${err}`);
+      } finally {
+        // No matter what, after the above code is run,
+        // the save state in the table better be "done".
+        // We triple check that here, though of course
+        // we believe the logic in save_to_disk and above
+        // should always accomplish this.
+        dbg("had to set the state to done in finally block");
+        if (
+          this.state === "ready" &&
+          (this.syncstring_save_state != "done" ||
+            this.syncstring_table_get_one().getIn(["save", "state"]) != "done")
+        ) {
+          this.syncstring_save_state = "done";
+          await this.set_save({ state: "done", error: "" });
+        }
       }
-    } else {
-      this.syncstring_save_state = state; // only used in the if above
     }
   }
 
@@ -2357,20 +2407,16 @@ export class SyncDoc extends EventEmitter {
     const dbg = this.dbg("save_to_disk");
     if (this.client.is_deleted(this.path, this.project_id)) {
       dbg("not saving to disk because deleted");
+      await this.set_save({ state: "done", error: "" });
       return;
     }
+
     dbg("initiating the save");
-    /* dbg(`live="${this.to_str()}"`);
-    this.show_history({log:dbg});
-    const x = this.patches_table.get();
-    if (x != null) {
-      dbg(`patches_table=${JSON.stringify(x.toJS())}`);
-    }
-    */
     if (!this.has_unsaved_changes()) {
       dbg("no unsaved changes, so don't save");
       // CRITICAL: this optimization is assumed by
       // autosave, etc.
+      await this.set_save({ state: "done", error: "" });
       return;
     }
 
@@ -2400,8 +2446,8 @@ export class SyncDoc extends EventEmitter {
       }
     }
 
-    dbg("now wait for the save to disk to finish");
     if (this.client.is_user()) {
+      dbg("now wait for the save to disk to finish");
       this.assert_is_ready("save_to_disk - waiting to finish");
       await this.wait_for_save_to_disk_done();
     }
@@ -2417,6 +2463,7 @@ export class SyncDoc extends EventEmitter {
       throw Error("syncstring table must be defined and users initialized");
     }
     const account_ids: string[] = info.get("users").toJS();
+    assertDefined(this.patch_list);
     return export_history(account_ids, this.patch_list, options);
   }
 
@@ -2634,7 +2681,7 @@ export class SyncDoc extends EventEmitter {
     const dbg = this.dbg("handle_patch_update_queue");
     try {
       this.handle_patch_update_queue_running = true;
-      while (this.patch_update_queue.length > 0) {
+      while (this.state != "closed" && this.patch_update_queue.length > 0) {
         dbg("queue size = ", this.patch_update_queue.length);
         const v: Patch[] = [];
         for (const key of this.patch_update_queue) {
@@ -2654,12 +2701,14 @@ export class SyncDoc extends EventEmitter {
           }
         }
         this.patch_update_queue = [];
+        assertDefined(this.patch_list);
         this.patch_list.add(v);
 
         // NOTE: The below sync_remote_and_doc can sometimes
         // *cause* new entries to be added to this.patch_update_queue.
         dbg("waiting for remote and doc to sync...");
         await this.sync_remote_and_doc();
+        if (this.state === ("closed" as State)) return; // closed during await; nothing further to do
         dbg("remote and doc now synced");
 
         if (this.patch_update_queue.length > 0) {
@@ -2676,6 +2725,8 @@ export class SyncDoc extends EventEmitter {
         }
       }
     } finally {
+      if (this.state == "closed") return; // got closed, so nothing further to do
+
       // OK, done and nothing in the queue
       // Notify save() to try again -- it may have
       // paused waiting for this to clear.
@@ -2685,14 +2736,49 @@ export class SyncDoc extends EventEmitter {
     }
   }
 
-  /*Merge remote patches and live version to create new live version,
+  /* Disable and enable sync.   When disabled we still
+     collect patches from upstream (but do not apply them
+     locally), and changes we make are broadcast into
+     the patch stream.   When we re-enable sync, all
+     patches are put together in the stream and
+     everything is synced as normal.  This is useful, e.g.,
+     to make it so a user **actively** editing a document is
+     not interrupted by being forced to sync (in particular,
+     by the 'before-change' event that they use to update
+     the live document).
+
+     Also, delay_sync will delay syncing local with upstream
+     for the given number of ms.  Calling it regularly while
+     user is actively editing to avoid them being bothered
+     by upstream patches getting merged in.
+  */
+
+  public disable_sync(): void {
+    this.sync_is_disabled = true;
+  }
+
+  public enable_sync(): void {
+    this.sync_is_disabled = false;
+    this.sync_remote_and_doc();
+  }
+
+  public delay_sync(timeout_ms = 2000): void {
+    clearTimeout(this.delay_sync_timer);
+    this.disable_sync();
+    this.delay_sync_timer = setTimeout(() => {
+      this.enable_sync();
+    }, timeout_ms);
+  }
+
+  /*
+    Merge remote patches and live version to create new live version,
     which is equal to result of applying all patches.
 
     Only returns once any newly created patches have
     been sent out.
-    */
+  */
   private async sync_remote_and_doc(): Promise<void> {
-    if (this.last == null || this.doc == null) {
+    if (this.last == null || this.doc == null || this.sync_is_disabled) {
       return;
     }
 
@@ -2719,6 +2805,7 @@ export class SyncDoc extends EventEmitter {
     // to properly set the state of this.doc to the value
     // of the patch list (e.g., not doing this 100% breaks
     // opening a file for the first time on cocalc-docker).
+    assertDefined(this.patch_list);
     const new_remote = this.patch_list.value();
     if (!this.doc.is_equal(new_remote)) {
       // There is a possibility that live document changed, so

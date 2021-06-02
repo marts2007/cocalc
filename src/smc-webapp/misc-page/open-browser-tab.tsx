@@ -14,8 +14,8 @@ interface WindowOpts {
   toolbar?: "yes" | "no";
   resizable?: "yes" | "no";
   scrollbar?: "yes" | "no";
-  width?: string;
-  height?: string;
+  width?: number;
+  height?: number;
 }
 
 export function open_popup_window(url: string, opts: WindowOpts = {}) {
@@ -36,8 +36,8 @@ export function open_new_tab(
     toolbar: "no",
     resizable: "yes",
     scrollbars: "yes",
-    width: "800",
-    height: "640",
+    width: 800,
+    height: 640,
   });
 
   if (popup) {
@@ -49,9 +49,9 @@ export function open_new_tab(
       }
     }
     const popup_opts = x.join(",");
-    tab = window.open("", "_blank", popup_opts);
+    tab = window.open(url, "_blank", popup_opts);
   } else {
-    tab = window.open("", "_blank");
+    tab = window.open(url, "_blank");
   }
 
   if (tab == null || tab.closed == null || tab.closed) {
@@ -82,7 +82,7 @@ export function open_new_tab(
   // equivalent to rel=noopener, i.e. neither tabs know about each other via window.opener
   // credits: https://stackoverflow.com/a/49276673/54236
   tab.opener = null;
-  // only *after* the above, we set the URL!
+  // be sure to set the URL (this might not be needed, since we set it above).
   tab.location = url;
   return tab;
 }

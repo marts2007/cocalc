@@ -20,20 +20,22 @@ import { NotebookScores } from "../jupyter/nbgrader/autograde";
 import { NbgraderScores } from "./nbgrader/scores";
 
 import { AssignmentCopyType, AssignmentCopyStep } from "./types";
-import { FormEvent } from "react";
 
-import { Button, ButtonGroup, FormControl, FormGroup } from "../antd-bootstrap";
+import { Button, ButtonGroup } from "../antd-bootstrap";
 
 import { Row, Col } from "antd";
 
 import {
   ErrorDisplay,
   Icon,
-  MarkdownInput,
+  Markdown,
+  Space,
   TimeAgo,
   Tip,
   is_different_date,
 } from "../r_misc";
+
+import { MarkdownInput } from "../editors/markdown-input";
 
 export { FoldersToolbar } from "./common/FoldersToolBar";
 
@@ -84,9 +86,9 @@ export class StudentAssignmentInfoHeader extends Component<
           "This column gives status information about collecting homework from students, and lets you collect from one student at a time.";
         break;
       case "grade":
-        title = "Grade";
+        title = "Record homework grade.";
         tip =
-          'Record homework grade" tip="Use this column to record the grade the student received on the assignment. Once the grade is recorded, you can return the assignment.  You can also export grades to a file in the Configuration tab.';
+          "Use this column to record the grade the student received on the assignment. Once the grade is recorded, you can return the assignment.  You can also export grades to a file in the Configuration tab.  Enter anything here; it does not have to be a number.";
         break;
 
       case "peer_assignment":
@@ -189,9 +191,8 @@ interface StudentAssignmentInfoProps {
     last_peer_collect?: LastCopyInfo;
     last_return_graded?: LastCopyInfo;
   };
-  edited_grade?: string;
-  edited_comments?: string;
   nbgrader_scores?: { [ipynb: string]: NotebookScores | string };
+  nbgrader_score_ids?: { [ipynb: string]: string[] };
   is_editing: boolean;
   nbgrader_run_info?: NBgraderRunInfo;
 }
@@ -209,6 +210,7 @@ export class StudentAssignmentInfo extends Component<
   StudentAssignmentInfoProps,
   StudentAssignmentInfoState
 > {
+  private clicked_nbgrader?: Date;
   constructor(props: StudentAssignmentInfoProps) {
     super(props);
     this.state = {
@@ -266,35 +268,14 @@ export class StudentAssignmentInfo extends Component<
     );
   };
 
-  private save_feedback = (e?: FormEvent<HTMLFormElement>) => {
-    if (e) {
-      e.preventDefault;
-    }
-    this.get_actions().assignments.save_feedback(
+  private set_edited_feedback = () => {
+    this.get_actions().assignments.update_edited_feedback(
       this.props.assignment.get("assignment_id"),
       this.props.student.get("student_id")
     );
   };
 
-  private set_edited_feedback = (grade?: string, comments?: string) => {
-    this.get_actions().assignments.update_edited_feedback(
-      this.props.assignment.get("assignment_id"),
-      this.props.student.get("student_id"),
-      grade,
-      comments
-    );
-  };
-
-  private handle_grade_change = (e) => {
-    e.preventDefault();
-    this.set_edited_feedback(e.target.value);
-  };
-
-  private handle_comments_change = (value) => {
-    this.set_edited_feedback(undefined, value);
-  };
-
-  private cancel_editing = () => {
+  private stop_editing = () => {
     this.get_actions().assignments.clear_edited_feedback(
       this.props.assignment.get("assignment_id"),
       this.props.student.get("student_id")
@@ -304,35 +285,32 @@ export class StudentAssignmentInfo extends Component<
   private render_grade(): Rendered {
     if (this.props.is_editing) {
       return (
-        <form
-          key="grade"
-          onSubmit={this.save_feedback}
-          style={{ marginTop: "15px" }}
-        >
-          <FormGroup>
-            <FormControl
-              autoFocus={true}
-              value={this.props.edited_grade}
-              ref="grade_input"
-              type="text"
-              placeholder="Grade (any text)..."
-              onChange={this.handle_grade_change}
-              onKeyDown={this.on_key_down_grade_editor}
-            />
-          </FormGroup>
-        </form>
+        <MarkdownInput
+          placeholder="Grade..."
+          value={this.props.grade || ""}
+          onBlur={(grade) => {
+            this.get_actions().assignments.set_grade(
+              this.props.assignment.get("assignment_id"),
+              this.props.student.get("student_id"),
+              grade
+            );
+          }}
+          onShiftEnter={() => this.stop_editing()}
+          height="3em"
+          hideHelp
+          style={{ margin: "5px 0" }}
+          autoFocus
+        />
       );
     } else {
       if (this.props.grade) {
         return (
-          <div key="grade">
-            <strong>Grade</strong>: {this.props.grade}
-            <br />
-            {this.props.comments ? (
-              <span>
-                <strong>Comments</strong>:
-              </span>
-            ) : undefined}
+          <div
+            style={{ cursor: "pointer" }}
+            onClick={() => this.set_edited_feedback()}
+            key="grade"
+          >
+            Grade: {this.props.grade}
           </div>
         );
       }
@@ -340,51 +318,54 @@ export class StudentAssignmentInfo extends Component<
   }
 
   private render_comments(): Rendered {
-    return (
-      <MarkdownInput
-        autoFocus={false}
-        editing={this.props.is_editing}
-        hide_edit_button={true}
-        save_disabled={
-          this.props.edited_grade === this.props.grade &&
-          this.props.edited_comments === this.props.comments
-        }
-        rows={5}
-        placeholder="Comments (optional)"
-        default_value={this.props.edited_comments || this.props.comments}
-        on_edit={() => this.set_edited_feedback()}
-        on_change={this.handle_comments_change}
-        on_save={() => this.save_feedback()}
-        on_cancel={this.cancel_editing}
-        rendered_style={{
-          maxHeight: "4em",
-          overflowY: "auto",
-          padding: "5px",
-          border: "1px solid #888",
-        }}
-      />
-    );
-  }
-
-  private on_key_down_grade_editor = (e) => {
-    switch (e.keyCode) {
-      case 27:
-        this.cancel_editing();
-        break;
-      case 13:
-        if (e.shiftKey) {
-          return this.save_feedback();
-        }
-        break;
+    if (!this.props.is_editing) {
+      if (!this.props.comments?.trim()) return;
+      return (
+        <div style={{ width: "100%", paddingRight: "5px" }}>
+          <Markdown
+            value={this.props.comments}
+            style={{
+              width: "100%",
+              maxHeight: "4em",
+              overflowY: "auto",
+              padding: "5px",
+              border: "1px solid lightgray",
+              cursor: "pointer",
+              display: "inline-block",
+            }}
+            onClick={() => this.set_edited_feedback()}
+          />
+        </div>
+      );
+    } else {
+      return (
+        <MarkdownInput
+          placeholder="Optional markdown comments..."
+          value={this.props.comments || ""}
+          onBlur={(comment) => {
+            this.get_actions().assignments.set_comment(
+              this.props.assignment.get("assignment_id"),
+              this.props.student.get("student_id"),
+              comment
+            );
+          }}
+          onShiftEnter={() => this.stop_editing()}
+          height="7em"
+          hideHelp
+        />
+      );
     }
-  };
+  }
 
   private render_nbgrader_scores(): Rendered {
     if (!this.props.nbgrader_scores) return;
     return (
       <div>
         <NbgraderScores
+          show_all={this.props.is_editing}
+          set_show_all={() => this.set_edited_feedback()}
           nbgrader_scores={this.props.nbgrader_scores}
+          nbgrader_score_ids={this.props.nbgrader_score_ids}
           name={this.props.name}
           student_id={this.props.student.get("student_id")}
           assignment_id={this.props.assignment.get("assignment_id")}
@@ -426,6 +407,16 @@ export class StudentAssignmentInfo extends Component<
           key="nbgrader"
           disabled={running}
           onClick={() => {
+            if (
+              this.clicked_nbgrader != null &&
+              new Date().valueOf() - this.clicked_nbgrader.valueOf() <= 3000
+            ) {
+              // User *just* clicked, and we want to avoid double click
+              // running nbgrader twice.
+              return;
+            }
+
+            this.clicked_nbgrader = new Date();
             this.get_actions().assignments.run_nbgrader_for_one_student(
               this.props.assignment.get("assignment_id"),
               this.props.student.get("student_id")
@@ -452,22 +443,28 @@ export class StudentAssignmentInfo extends Component<
   }
 
   private render_enter_grade(): Rendered {
-    const grade = (this.props.grade || "").trim();
-    const bsStyle = !grade ? "primary" : undefined;
-    const text = !!grade ? "Edit grade" : "Enter grade";
+    if ((this.props.grade ?? "").trim() || (this.props.comments ?? "").trim()) {
+      return;
+    }
     return (
-      <Tip
-        title="Enter student's grade"
-        tip="Enter the grade that you assigned to your student on this assignment here.  You can enter anything (it doesn't have to be a number)."
+      <Button
+        key="edit"
+        onClick={() => this.set_edited_feedback()}
+        bsStyle={"default"}
+        disabled={this.props.is_editing}
+        style={{ marginRight: "5px" }}
       >
-        <Button
-          key="edit"
-          onClick={() => this.set_edited_feedback()}
-          bsStyle={bsStyle}
-        >
-          {text}
-        </Button>
-      </Tip>
+        Enter grade...
+      </Button>
+    );
+  }
+
+  private render_save_button(): Rendered {
+    if (!this.props.is_editing) return;
+    return (
+      <Button bsStyle="success" key="save" onClick={() => this.stop_editing()}>
+        Save
+      </Button>
     );
   }
 
@@ -475,6 +472,7 @@ export class StudentAssignmentInfo extends Component<
     return (
       <>
         {this.render_enter_grade()}
+        {this.render_save_button()}
         {this.render_grade()}
         {this.render_comments()}
         {this.render_nbgrader()}
@@ -568,14 +566,15 @@ export class StudentAssignmentInfo extends Component<
   ): Rendered {
     const placement = name === "Return" ? "left" : "right";
     return (
-      <ButtonGroup key="open_recopy">
+      <div key="open_recopy">
         {this.render_open_recopy_confirm(name, copy, copy_tip, placement)}
+        <Space />
         <Button key="open" onClick={open}>
           <Tip title="Open assignment" placement={placement} tip={open_tip}>
             <Icon name="folder-open-o" /> Open
           </Tip>
         </Button>
-      </ButtonGroup>
+      </div>
     );
   }
 
@@ -623,7 +622,7 @@ export class StudentAssignmentInfo extends Component<
       error.indexOf("No such file or directory") !== -1 ||
       error.indexOf("ENOENT") != -1
     ) {
-      error = `The student probably renamed the directory that contained their assignment.  Open their project and see what happened.   If they renamed it, you could rename it back, then collect the assignment again.\n${error}`;
+      error = `The student might have renamed or deleted the directory that contained their assignment.  Open their project and see what happened.   If they renamed it, you could rename it back, then collect the assignment again.\n${error}`;
     } else {
       error = `Try to ${name.toLowerCase()} again:\n` + error;
     }
@@ -631,7 +630,7 @@ export class StudentAssignmentInfo extends Component<
       <ErrorDisplay
         key="error"
         error={error}
-        style={{ maxHeight: "140px", overflow: "auto" }}
+        style={{ maxHeight: "140px", overflow: "auto", display: "block" }}
       />
     );
   }
@@ -746,26 +745,15 @@ export class StudentAssignmentInfo extends Component<
     );
     const skip_collect: boolean = !!this.props.assignment.get("skip_collect");
     if (peer_grade) {
-      show_grade_col =
-        !skip_grading &&
-        this.props.info.last_peer_collect &&
-        !this.props.info.last_peer_collect.error;
+      show_grade_col = !skip_grading && this.props.info.last_peer_collect;
       show_return_graded =
-        this.props.grade ||
-        (skip_grading &&
-          this.props.info.last_peer_collect &&
-          !this.props.info.last_peer_collect.error);
+        this.props.grade || (skip_grading && this.props.info.last_peer_collect);
     } else {
       show_grade_col =
-        (!skip_grading &&
-          this.props.info.last_collect &&
-          !this.props.info.last_collect.error) ||
-        skip_collect;
+        (!skip_grading && this.props.info.last_collect) || skip_collect;
       show_return_graded =
         this.props.grade ||
-        (skip_grading &&
-          this.props.info.last_collect &&
-          !this.props.info.last_collect.error) ||
+        (skip_grading && this.props.info.last_collect) ||
         (skip_grading && skip_collect);
     }
 

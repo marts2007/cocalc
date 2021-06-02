@@ -27,7 +27,7 @@ import { SiteName } from "../customize";
 import { alert_message } from "../alerts";
 import { Avatar } from "../account/avatar/avatar";
 import { NavTab } from "./nav-tab";
-import { ErrorBoundary, Loading } from "../r_misc";
+import { Loading } from "../r_misc";
 import { ActiveContent } from "./active-content";
 import { FullscreenButton } from "./fullscreen-button";
 import { VersionWarning, CookieWarning, LocalStorageWarning } from "./warnings";
@@ -36,6 +36,7 @@ import { ConnectionInfo } from "./connection-info";
 import { ConnectionIndicator } from "./connection-indicator";
 import { FileUsePage } from "../file-use/page";
 import { NotificationBell } from "./notification-bell";
+import { IS_IPAD, IS_IOS } from "../feature";
 
 const HIDE_LABEL_THRESHOLD = 6;
 const NAV_HEIGHT = 36;
@@ -77,10 +78,28 @@ const PROJECTS_STYLE: React.CSSProperties = {
   padding: "10px 7px",
 } as const;
 
+// NOTE: On iOS/iPadOS there's a reserved 32px at the bottom
+// of the screen that plays a role in autocompletions.
+// Not taking this into account with the overall page
+// container leads to extreme usability frustration
+// given the design of cocalc.  See
+//  https://github.com/sagemathinc/cocalc/issues/5112
+// Note - even this fix is pretty annoying since on some
+// devices and some modes there is a noticeable blank
+// at the bottom of the page sometimes.  This is just
+// something that makes ipads/iphones *usable*, and I really
+// can't spend more time on this now.
+let page_height: string;
+if (IS_IPAD || IS_IOS) {
+  page_height = "calc(100vh - 116px)";
+} else {
+  page_height = "100vh";
+}
+
 const PAGE_STYLE: React.CSSProperties = {
   display: "flex",
   flexDirection: "column",
-  height: "100vh",
+  height: page_height, // see note
   width: "100vw",
   overflow: "hidden",
   background: "white",
@@ -382,9 +401,7 @@ export const Page: React.FC = () => {
       )}
       {!fullscreen && <div style={{ minHeight: positionHackHeight }}></div>}
       {fullscreen !== "kiosk" && !is_anonymous && <FullscreenButton />}
-      <ErrorBoundary>
-        <ActiveContent />
-      </ErrorBoundary>
+      <ActiveContent />
     </div>
   );
 };

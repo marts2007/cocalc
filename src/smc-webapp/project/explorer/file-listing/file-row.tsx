@@ -3,18 +3,19 @@
  *  License: AGPLv3 s.t. "Commons Clause" – see LICENSE.md for details
  */
 
-import { React, useState } from "../../../app-framework";
 import memoizeOne from "memoize-one";
-
+import { React, useState } from "../../../app-framework";
 import { ProjectActions } from "../../../project_actions";
 import { CopyButton } from "./copy-button";
 import { PublicButton } from "./public-button";
 import { FileCheckbox } from "./file-checkbox";
 import { generate_click_for } from "./utils";
-import { COLORS, TimeAgo, Tip, Icon } from "../../../r_misc";
-const { Button, Row, Col } = require("react-bootstrap");
-const misc = require("smc-util/misc");
-const { project_tasks } = require("../../../project_tasks");
+import { TimeAgo, Tip, Icon } from "../../../r_misc";
+import { COLORS } from "smc-util/theme";
+import { Button, Row, Col } from "react-bootstrap";
+import * as misc from "smc-util/misc";
+import { url_href } from "../../utils";
+import { useStudentProjectFunctionality } from "smc-webapp/course";
 
 interface Props {
   isdir: boolean;
@@ -37,6 +38,9 @@ interface Props {
 }
 
 export const FileRow: React.FC<Props> = React.memo((props) => {
+  const student_project_functionality = useStudentProjectFunctionality(
+    props.actions.project_id
+  );
   const [
     selection_at_last_mouse_down,
     set_selection_at_last_mouse_down,
@@ -109,9 +113,13 @@ export const FileRow: React.FC<Props> = React.memo((props) => {
 
   function render_name() {
     let name = props.display_name ?? props.name;
-    const name_and_ext = misc.separate_file_extension(name);
-    ({ name } = name_and_ext);
-    const { ext } = name_and_ext;
+    let ext: string;
+    if (props.isdir) {
+      ext = "";
+    } else {
+      const name_and_ext = misc.separate_file_extension(name);
+      ({ name, ext } = name_and_ext);
+    }
 
     const show_tip =
       (props.display_name != undefined && props.name !== props.display_name) ||
@@ -218,6 +226,8 @@ export const FileRow: React.FC<Props> = React.memo((props) => {
   }
 
   function render_download_button(url_href) {
+    if (student_project_functionality.disableActions) return;
+
     // ugly width 2.5em is to line up with blank space for directory.
     // TODO: This really should not be in the size column...
     return (
@@ -244,9 +254,7 @@ export const FileRow: React.FC<Props> = React.memo((props) => {
 
   // See https://github.com/sagemathinc/cocalc/issues/1020
   // support right-click → copy url for the download button
-  const url_href = project_tasks(props.actions.project_id).url_href(
-    full_path()
-  );
+  const url = url_href(props.actions.project_id, full_path());
 
   return (
     <Row
@@ -256,13 +264,15 @@ export const FileRow: React.FC<Props> = React.memo((props) => {
       className={props.no_select ? "noselect" : undefined}
     >
       <Col sm={2} xs={3}>
-        <FileCheckbox
-          name={props.name}
-          checked={props.checked}
-          current_path={props.current_path}
-          actions={props.actions}
-          style={{ verticalAlign: "sub" }}
-        />
+        {!student_project_functionality.disableActions && (
+          <FileCheckbox
+            name={props.name}
+            checked={props.checked}
+            current_path={props.current_path}
+            actions={props.actions}
+            style={{ verticalAlign: "sub" }}
+          />
+        )}
         {render_public_file_info()}
       </Col>
       <Col sm={1} xs={3}>
@@ -275,7 +285,7 @@ export const FileRow: React.FC<Props> = React.memo((props) => {
         ) : (
           <span className="pull-right" style={{ color: "#666" }}>
             {misc.human_readable_size(props.size)}
-            {render_download_button(url_href)}
+            {render_download_button(url)}
           </span>
         )}
       </Col>

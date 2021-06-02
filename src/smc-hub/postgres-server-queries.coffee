@@ -23,11 +23,16 @@ random_key = require("random-key")
 misc_node = require('smc-util-node/misc_node')
 misc2_node = require('smc-util-node/misc2_node')
 
-misc2 = require('smc-util/misc2')
 {defaults} = misc = require('smc-util/misc')
 required = defaults.required
 
+# IDK why, but if that import line is down below, where the other "./postgres/*" imports are, building manage
+# fails with: remember-me.ts(15,31): error TS2307: Cannot find module 'async-await-utils/hof' or its corresponding type declarations.
+{get_remember_me} = require('./postgres/remember-me')
+
 {SCHEMA, DEFAULT_QUOTAS, PROJECT_UPGRADES, COMPUTE_STATES, RECENT_TIMES, RECENT_TIMES_KEY, site_settings_conf} = require('smc-util/schema')
+
+{ DEFAULT_COMPUTE_IMAGE } = require("smc-util/compute-images")
 
 PROJECT_GROUPS = misc.PROJECT_GROUPS
 
@@ -35,21 +40,30 @@ PROJECT_GROUPS = misc.PROJECT_GROUPS
 
 {syncdoc_history} = require('./postgres/syncdoc-history')
 collab = require('./postgres/collab')
-{set_account_info_if_possible} = require('./postgres/account-queries')
+{is_paying_customer, set_account_info_if_possible} = require('./postgres/account-queries')
 
 {site_license_usage_stats, projects_using_site_license, number_of_projects_using_site_license} = require('./postgres/site-license/analytics')
 {update_site_license_usage_log} = require('./postgres/site-license/usage-log')
 {site_license_public_info} = require('./postgres/site-license/public')
+{site_license_manager_set} = require('./postgres/site-license/manager')
 {matching_site_licenses, manager_site_licenses} = require('./postgres/site-license/search')
-{permanently_unlink_all_deleted_projects_of_user} = require('./postgres/delete-projects')
-{unlist_all_public_paths} = require('./postgres/public-paths')
-{get_remember_me} = require('./postgres/remember-me')
+{sync_site_license_subscriptions} = require('./postgres/site-license/sync-subscriptions')
+{add_license_to_project, remove_license_from_project} = require('./postgres/site-license/add-remove')
+{project_datastore_set, project_datastore_get, project_datastore_del} = require('./postgres/project-queries')
+
+{permanently_unlink_all_deleted_projects_of_user, unlink_old_deleted_projects} = require('./postgres/delete-projects')
+{get_all_public_paths, unlist_all_public_paths} = require('./postgres/public-paths')
+{get_personal_user} = require('./postgres/personal')
 {projects_that_need_to_be_started} = require('./postgres/always-running');
+{calc_stats} = require('./postgres/stats')
 
 SERVER_SETTINGS_EXTRAS = require("smc-util/db-schema/site-settings-extras").EXTRAS
 SITE_SETTINGS_CONF = require("smc-util/schema").site_settings_conf
 SERVER_SETTINGS_CACHE = require("expiring-lru-cache")({ size: 10, expiry: 60 * 1000 })
 {pii_expire} = require("./utils")
+webapp_config_clear_cache = require("./webapp-configuration").clear_cache
+
+{stripe_name} = require('./stripe/client')
 
 # log events, which contain personal information (email, account_id, ...)
 PII_EVENTS = ['create_account',
@@ -246,6 +260,7 @@ exports.extend_PostgreSQL = (ext) -> class PostgreSQL extends ext
 
     reset_server_settings_cache: =>
         SERVER_SETTINGS_CACHE.reset()
+        webapp_config_clear_cache()
 
     get_server_setting: (opts) =>
         opts = defaults opts,
@@ -274,7 +289,7 @@ exports.extend_PostgreSQL = (ext) -> class PostgreSQL extends ext
                 if err
                     opts.cb(err)
                 else
-                    x = {}
+                    x = {_timestamp: Date.now()}
                     # process values, possibly post-process values
                     for k in result.rows
                         val = k.value
@@ -347,6 +362,21 @@ exports.extend_PostgreSQL = (ext) -> class PostgreSQL extends ext
         @_query
             query : 'SELECT strategy, conf FROM passport_settings'
             cb    : all_results(opts.cb)
+
+    get_all_passport_settings_cached: (opts) =>
+        opts = defaults opts,
+            cb       : required
+        passports = SERVER_SETTINGS_CACHE.get('passports')
+        if passports != null
+            opts.cb(undefined, passports)
+            return
+        @get_all_passport_settings
+            cb: (err, res) =>
+                if err
+                    opts.cb(err)
+                else
+                    SERVER_SETTINGS_CACHE.set('passports', res)
+                    opts.cb(undefined, res)
 
     ###
     API Key Management
@@ -740,10 +770,13 @@ exports.extend_PostgreSQL = (ext) -> class PostgreSQL extends ext
                         cb(err)
             (cb) =>
                 # TODO maybe expire tokens after some time
-                if locals.old_challenge?.token?
-                    locals.token = locals.old_challenge.token
-                    cb()
-                    return
+                if locals.old_challenge?
+                    old = locals.old_challenge
+                    # return the same token if the is one for the same email
+                    if old.token? and old.email == locals.email_address
+                        locals.token = locals.old_challenge.token
+                        cb()
+                        return
 
                 {generate} = require("random-key")
                 locals.token = generate(16).toLowerCase()
@@ -899,7 +932,7 @@ exports.extend_PostgreSQL = (ext) -> class PostgreSQL extends ext
             account_id  : required   # user's account_id
             stripe      : undefined  # api connection to stripe
             customer_id : undefined  # will be looked up if not known
-            cb          : undefined
+            cb          : undefined  # cb(err, new stripe customer record)
         locals =
             customer : undefined
             email_address : undefined
@@ -951,8 +984,8 @@ exports.extend_PostgreSQL = (ext) -> class PostgreSQL extends ext
                             return
                         else
                             locals.email_address = x.email_address
-                            locals.first_name = x.first_name ? ''
-                            locals.last_name  = x.last_name  ? ''
+                            locals.first_name = x.first_name
+                            locals.last_name  = x.last_name
                             cb()
             (cb) =>
                 if not opts.customer_id?
@@ -962,7 +995,7 @@ exports.extend_PostgreSQL = (ext) -> class PostgreSQL extends ext
                     console.log("got invalid email address '#{locals.email_address}' to update stripe from '#{opts.account_id}'")
                     cb(); return
 
-                name = "#{locals.first_name} #{locals.last_name}"
+                name = stripe_name(locals.first_name, locals.last_name)
                 email_changed = locals.email_address != locals.customer.email
                 name_undef = not locals.customer.name?
                 name_changed = locals.customer.name != name or locals.customer.description != name
@@ -995,7 +1028,7 @@ exports.extend_PostgreSQL = (ext) -> class PostgreSQL extends ext
                     set   : 'stripe_customer::JSONB' : locals.customer
                     where : 'account_id = $::UUID'   : opts.account_id
                     cb    : cb
-        ], opts.cb)
+        ], (err) => opts.cb(err, locals.customer))
 
     ###
     Auxillary billing related queries
@@ -1205,6 +1238,9 @@ exports.extend_PostgreSQL = (ext) -> class PostgreSQL extends ext
                     # name search only includes active users
                     query += " AND ((last_active >= NOW() - $#{i}::INTERVAL) OR (created >= NOW() - $#{i}::INTERVAL)) "
                     i += 1
+                if not opts.admin
+                    # Exclude unlisted users from search results
+                    query += " AND unlisted IS NOT true ";
                 # recently active users are much more relevant than old ones -- #2991
                 query += " ORDER BY last_active DESC NULLS LAST"
                 query += " LIMIT $#{i}::INTEGER"; i += 1
@@ -1496,6 +1532,10 @@ exports.extend_PostgreSQL = (ext) -> class PostgreSQL extends ext
             where :
                 'hash = $::TEXT' : opts.hash.slice(0,127)
             cb    : opts.cb
+
+    # ASYNC FUNCTION
+    get_personal_user: () =>
+        return await get_personal_user(@)
 
     ###
     # Changing password/email, etc. sensitive info about a user
@@ -1807,11 +1847,20 @@ exports.extend_PostgreSQL = (ext) -> class PostgreSQL extends ext
             title       : undefined
             description : undefined
             lti_id      : undefined   # array of strings
-            image       : 'default'   # probably ok to leave it undefined
+            image       : DEFAULT_COMPUTE_IMAGE   # probably ok to leave it undefined
+            license     : undefined   # string -- "license_id1,license_id2,..."
             cb          : required    # cb(err, project_id)
         if not @_validate_opts(opts) then return
         project_id = misc.uuid()
         now = new Date()
+
+        if opts.license
+            site_license = {}
+            for x in opts.license.split(',')
+                site_license[x] = {}
+        else
+            site_license = undefined
+
         @_query
             query  : "INSERT INTO projects"
             values :
@@ -1820,6 +1869,7 @@ exports.extend_PostgreSQL = (ext) -> class PostgreSQL extends ext
                 description   : opts.description
                 compute_image : opts.image
                 lti_id        : opts.lti_id
+                site_license  : site_license
                 created       : now
                 last_edited   : now
                 users         : {"#{opts.account_id}":{group:'owner'}}
@@ -2167,7 +2217,7 @@ exports.extend_PostgreSQL = (ext) -> class PostgreSQL extends ext
         opts = defaults opts,
             project_id  : required
             account_id  : undefined
-            groups      : misc.PROJECT_GROUPS
+            groups      : ['owner', 'collaborator']
             cache       : false  # if true cache result for a few seconds
             cb          : required  # cb(err, true if in group)
         if not opts.account_id?
@@ -2530,7 +2580,7 @@ exports.extend_PostgreSQL = (ext) -> class PostgreSQL extends ext
     #    (3) they do NOT touch upgrades on any projects again.
     ensure_all_user_project_upgrades_are_valid: (opts) =>
         opts = defaults opts,
-            limit : 1                   # We only default to 1 at a time, since there is no hurry.
+            limit : 1          # We only default to 1 at a time, since there is no hurry.
             cb    : required
         dbg = @_dbg("ensure_all_user_project_upgrades_are_valid")
         locals = {}
@@ -2539,6 +2589,7 @@ exports.extend_PostgreSQL = (ext) -> class PostgreSQL extends ext
                 @_query
                     query : "SELECT account_id FROM accounts"
                     where : "stripe_customer_id IS NOT NULL"
+                    timeout_s: 300
                     cb    : all_results 'account_id', (err, account_ids) =>
                         locals.account_ids = account_ids
                         cb(err)
@@ -2554,6 +2605,14 @@ exports.extend_PostgreSQL = (ext) -> class PostgreSQL extends ext
                         cb         : cb
                 async.mapLimit(locals.account_ids, opts.limit, f, cb)
         ], opts.cb)
+
+    # Ensure all (or just for given account_id) site license subscriptions
+    # are non-expired iff subscription in stripe is "active" or "trialing"
+    # account_id is optional; if not given iterates over all users
+    # with stripe_customer field set.
+    # async/await:
+    sync_site_license_subscriptions: (account_id, test_mode) =>
+        return await sync_site_license_subscriptions(@, account_id, test_mode)
 
     # Return the sum total of all user upgrades to a particular project
     get_project_upgrades: (opts) =>
@@ -2654,67 +2713,6 @@ exports.extend_PostgreSQL = (ext) -> class PostgreSQL extends ext
                 else
                     opts.cb(undefined, env ? {})
 
-    ###
-    Stats
-    ###
-    _count_timespan: (opts) =>
-        opts = defaults opts,
-            table    : required
-            field    : undefined
-            age_m    : undefined
-            upper_m  : undefined  # defaults to zero minutes (i.e. "now")
-            cb       : required
-        where = {}
-        if opts.field?
-            if opts.age_m?
-                where["#{opts.field} >= $::TIMESTAMP"] = misc.minutes_ago(opts.age_m)
-            if opts.upper_m?
-                where["#{opts.field} <= $::TIMESTAMP"] = misc.minutes_ago(opts.upper_m)
-        @_query
-            query : "SELECT COUNT(*) FROM #{opts.table}"
-            where : where
-            cb    : count_result(opts.cb)
-
-    _count_opened_files: (opts) =>
-        opts = defaults opts,
-            age_m    : undefined
-            key      : required
-            data     : required
-            distinct : required # true or false
-            cb       : required
-        q = """
-            WITH filenames AS (
-                SELECT #{if opts.distinct then 'DISTINCT' else ''} event ->> 'filename' AS fn
-                FROM project_log
-                WHERE time BETWEEN $1::TIMESTAMP AND NOW()
-                  AND event @> '{"action" : "open"}'::jsonb
-            ), ext_count AS (
-                SELECT COUNT(*) as cnt, lower(reverse(split_part(reverse(fn), '.', 1))) AS ext
-                FROM filenames
-                GROUP BY ext
-            )
-            SELECT ext, cnt
-            FROM ext_count
-            WHERE ext IN ('sagews', 'ipynb', 'tex', 'rtex', 'rnw', 'x11',
-                          'rmd', 'txt', 'py', 'md', 'sage', 'term', 'rst', 'lean',
-                          'png', 'svg', 'jpeg', 'jpg', 'pdf',
-                          'tasks', 'course', 'sage-chat', 'chat')
-            ORDER BY ext
-            """
-
-        post_process = (err, rows) ->
-            if err
-                opts.cb(err); return
-            else
-                _ = require('underscore')
-                values = _.object(_.pluck(rows, 'ext'), _.pluck(rows, 'cnt'))
-                opts.data[opts.key] = values
-                opts.cb(undefined)
-
-        @_query
-            query : q
-            params : [misc.minutes_ago(opts.age_m)]
-            cb     : all_results(post_process)
 
     recent_projects: (opts) =>
         opts = defaults opts,
@@ -2759,102 +2757,7 @@ exports.extend_PostgreSQL = (ext) -> class PostgreSQL extends ext
             ttl_db : 30       # how long a valid result from a db query is cached in any case
             update : true     # true: recalculate if older than ttl; false: don't recalculate and pick it from the DB (locally cached for ttl secs)
             cb     : undefined
-        stats   = undefined
-        start_t = process.hrtime()
-        dbg     = @_dbg('get_stats')
-        async.series([
-            (cb) =>
-                dbg("using cached stats?")
-                if @_stats_cached?
-                    # decide if cache should be used -- tighten interval if we are allowed to update
-                    offset_dt = if opts.update then opts.ttl_dt else 0
-                    is_cache_recent = @_stats_cached.time > misc.seconds_ago(opts.ttl - offset_dt)
-                    # in case we aren't allowed to update and the cache is outdated, do not query db too often
-                    did_query_recently = @_stats_cached_db_query > misc.seconds_ago(opts.ttl_db)
-                    if is_cache_recent or did_query_recently
-                        stats = @_stats_cached
-                        dbg("using locally cached stats from #{(new Date() - stats.time) / 1000} secs ago.")
-                        cb(); return
-                @_query
-                    query : "SELECT * FROM stats ORDER BY time DESC LIMIT 1"
-                    cb    : one_result (err, x) =>
-                        if err or not x?
-                            dbg("problem with query -- no stats in db?")
-                            cb(err); return
-                        # query successful, since x exists
-                        @_stats_cached_db_query = new Date()
-                        if opts.update and x.time < misc.seconds_ago(opts.ttl - opts.ttl_dt)
-                            dbg("cache outdated -- will update stats")
-                            cb()
-                        else
-                            dbg("using db stats from #{(new Date() - x.time) / 1000} secs ago.")
-                            stats = x
-                            # storing still valid result in local cache
-                            @_stats_cached = misc.deep_copy(stats)
-                            cb()
-            (cb) =>
-                if stats?
-                    cb(); return
-                else if not opts.update
-                    dbg("warning: no recent stats but not allowed to update")
-                    cb(); return
-                dbg("querying all stats from the DB")
-                stats =
-                    time             : new Date()
-                    projects_created : {}
-                    projects_edited  : {}
-                    accounts_created : {}
-                    files_opened     : {distinct: {}, total:{}}
-                R = RECENT_TIMES
-                K = RECENT_TIMES_KEY
-                stats_tasks = [
-                    (cb) => @_count_timespan(table:'accounts', cb:(err, x) => stats.accounts = x; cb(err))
-                    (cb) => @_count_timespan(table:'projects', cb:(err, x) => stats.projects = x; cb(err))
-                    (cb) => @_count_timespan(table:'projects', field: 'last_edited', age_m: R.active, cb: (err, x) => stats.projects_edited[K.active] = x; cb(err))
-                    (cb) =>
-                        @_query
-                            query : 'SELECT expire, host, clients FROM hub_servers'
-                            cb    : all_results (err, hub_servers) =>
-                                if err
-                                    cb(err)
-                                else
-                                    now = new Date()
-                                    stats.hub_servers = []
-                                    for x in hub_servers
-                                        if x.expire > now
-                                            delete x.expire
-                                            stats.hub_servers.push(x)
-                                    cb()
-                ]
-                for tkey in ['last_month', 'last_week', 'last_day', 'last_hour']
-                    do (tkey) =>
-                        stats_tasks.push((cb) => @_count_opened_files(age_m:R[tkey], key:K[tkey], data:stats.files_opened.distinct, distinct:true,  cb:cb))
-                        stats_tasks.push((cb) => @_count_opened_files(age_m:R[tkey], key:K[tkey], data:stats.files_opened.total,    distinct:false, cb:cb))
-                        stats_tasks.push((cb) => @_count_timespan(table:'projects', field: 'last_edited', age_m: R[tkey], cb: (err, x) => stats.projects_edited[K[tkey]] = x; cb(err)))
-                        stats_tasks.push((cb) => @_count_timespan(table:'projects', field: 'created', age_m: R[tkey], cb: (err, x) => stats.projects_created[K[tkey]] = x; cb(err)))
-                        stats_tasks.push((cb) => @_count_timespan(table:'accounts', field: 'created', age_m: R[tkey], cb: (err, x) => stats.accounts_created[K[tkey]] = x; cb(err)))
-
-                # this was running in parallel, but there is no hurry updating the stats...
-                # async.parallelLimit(stats_tasks, MAP_LIMIT, (err) =>
-                async.series(stats_tasks, (err) =>
-                    if err
-                        cb(err)
-                    else
-                        elapsed_t = process.hrtime(start_t)
-                        duration_s = (elapsed_t[0] + elapsed_t[1] / 1e9).toFixed(4)
-                        dbg("everything succeeded above after #{duration_s} secs -- now insert stats")
-                        # storing in local and db cache
-                        stats.id = misc.uuid()
-                        @_stats_cached = misc.deep_copy(stats)
-                        @_query
-                            query  : 'INSERT INTO stats'
-                            values : stats
-                            cb     : cb
-                )
-        ], (err) =>
-            dbg("get_stats final CB: (#{misc.to_json(err)}, #{misc.to_json(stats)})")
-            opts.cb?(err, stats)
-        )
+        return await calc_stats(@, opts)
 
     get_active_student_stats: (opts) =>
         opts = defaults opts,
@@ -3190,6 +3093,7 @@ exports.extend_PostgreSQL = (ext) -> class PostgreSQL extends ext
                     @_query
                         query : "DELETE FROM patches"
                         where : locals.where
+                        timeout_s: 300
                         cb    : cb
         ], opts.cb)
 
@@ -3223,23 +3127,70 @@ exports.extend_PostgreSQL = (ext) -> class PostgreSQL extends ext
         return await site_license_public_info(@, license_id)
 
     # async function
+    site_license_manager_set: (license_id, info) =>
+        return await site_license_manager_set(@, license_id, info)
+
+    # async function
     update_site_license_usage_log: =>
         return await update_site_license_usage_log(@)
 
-        # async function
+    # async function
     matching_site_licenses: (...args) =>
         return await matching_site_licenses(@, ...args)
 
+    # async function
     manager_site_licenses: (...args) =>
         return await manager_site_licenses(@, ...args)
+
+    # async function
+    add_license_to_project: (...args) =>
+        return await add_license_to_project(@, ...args)
+
+    # async function
+    remove_license_from_project: (...args) =>
+        return await remove_license_from_project(@, ...args)
+
+    # async function
+    project_datastore_set: (...args) =>
+        return await project_datastore_set(@, ...args)
+
+    # async function
+    project_datastore_get: (...args) =>
+        return await project_datastore_get(@, ...args)
+
+    # async function
+    project_datastore_del: (...args) =>
+        return await project_datastore_del(@, ...args)
 
     # async function
     permanently_unlink_all_deleted_projects_of_user: (account_id_or_email_address) =>
         return await permanently_unlink_all_deleted_projects_of_user(@, account_id_or_email_address)
 
     # async function
+    unlink_old_deleted_projects: () =>
+        return await unlink_old_deleted_projects(@)
+
+    # async function
     unlist_all_public_paths: (account_id, is_owner) =>
         return await unlist_all_public_paths(@, account_id, is_owner)
 
+    # async
     projects_that_need_to_be_started: () =>
         return await projects_that_need_to_be_started(@)
+
+    # async
+    # this *merges* in the run_quota; it doesn't replace it.
+    set_run_quota: (project_id, run_quota) =>
+        return await @async_query
+            query       : "UPDATE projects"
+            jsonb_merge : {run_quota:run_quota}
+            where       : {project_id:project_id}
+
+    # async -- true if they are a manager on a license or have
+    # any subscriptions.
+    is_paying_customer: (account_id) =>
+        return await is_paying_customer(@, account_id)
+
+    # async
+    get_all_public_paths: (account_id) =>
+        return await get_all_public_paths(@, account_id)

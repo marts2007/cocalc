@@ -4,19 +4,14 @@
  */
 
 import * as React from "react";
-const misc = require("smc-util/misc");
-import {
-  Icon,
-  NonMemberProjectWarning,
-  NoNetworkProjectWarning,
-} from "../../r_misc";
+import * as misc from "smc-util/misc";
+import { Icon } from "../../r_misc";
+import { NonMemberProjectWarning } from "../warnings/non-member";
+import { NoNetworkProjectWarning } from "../warnings/no-network";
 import { redux, rtypes, rclass } from "../../app-framework";
 import { JupyterServerPanel } from "../plain-jupyter-server";
 import { JupyterLabServerPanel } from "../jupyterlab-server";
-import {
-  AddCollaboratorsPanel,
-  CurrentCollaboratorsPanel,
-} from "../../collaborators";
+import { CurrentCollaboratorsPanel } from "../../collaborators";
 
 import { AboutBox } from "./about-box";
 import { UpgradeUsage } from "./upgrade-usage";
@@ -28,10 +23,20 @@ import { Customer, ProjectMap, UserMap } from "smc-webapp/todo-types";
 import { Project } from "./types";
 import { SSHPanel } from "./ssh";
 import { Environment } from "./environment";
+import { Datastore } from "./datastore";
 import { KUCALC_COCALC_COM } from "smc-util/db-schema/site-defaults";
+import { SettingBox } from "../../r_misc";
+import { AddCollaborators } from "../../collaborators";
 
 import { webapp_client } from "../../webapp-client";
 import { Col, Row } from "react-bootstrap";
+
+import { commercial } from "smc-webapp/customize";
+import {
+  is_available,
+  ProjectConfiguration,
+} from "smc-webapp/project_configuration";
+import { getStudentProjectFunctionality } from "smc-webapp/course";
 
 interface ReactProps {
   project_id: string;
@@ -63,7 +68,7 @@ interface ReduxProps {
   all_projects_have_been_loaded: boolean;
 
   // context specific
-  configuration: Map<string, any>;
+  configuration: ProjectConfiguration;
   available_features: object;
 }
 
@@ -133,14 +138,11 @@ export const Body = rclass<ReactProps>(
       const site_license_ids: string[] = store.get_site_license_ids(
         this.props.project_id
       );
-      const allow_urls = store.allow_urls_in_emails(this.props.project_id);
 
-      const { commercial } = require("../../customize");
-
-      const { is_available } = require("../../project_configuration");
       const available = is_available(this.props.configuration);
       const have_jupyter_lab = available.jupyter_lab;
       const have_jupyter_notebook = available.jupyter_notebook;
+      const student = getStudentProjectFunctionality(this.props.project_id);
       return (
         <div>
           {commercial &&
@@ -207,8 +209,9 @@ export const Body = rclass<ReactProps>(
                 project={this.props.project}
                 actions={redux.getActions("projects")}
               />
-              {this.props.ssh_gateway ||
-              this.props.kucalc === KUCALC_COCALC_COM ? (
+              {!student.disableSSH &&
+              (this.props.ssh_gateway ||
+                this.props.kucalc === KUCALC_COCALC_COM) ? (
                 <SSHPanel
                   key="ssh-keys"
                   project={this.props.project}
@@ -220,6 +223,9 @@ export const Body = rclass<ReactProps>(
                 key="environment"
                 project_id={this.props.project_id}
               />
+              {this.props.kucalc === KUCALC_COCALC_COM && (
+                <Datastore key="datastore" project_id={this.props.project_id} />
+              )}
               <ProjectCapabilities
                 name={this.props.name}
                 key={"capabilities"}
@@ -232,11 +238,13 @@ export const Body = rclass<ReactProps>(
                 project={this.props.project}
                 user_map={this.props.user_map}
               />
-              <AddCollaboratorsPanel
-                key="new-collabs"
-                project={this.props.project}
-                allow_urls={allow_urls}
-              />
+              {!student.disableCollaborators && (
+                <SettingBox title="Add new collaborators" icon="plus">
+                  <AddCollaborators
+                    project_id={this.props.project.get("project_id")}
+                  />
+                </SettingBox>
+              )}
               <ProjectControl key="control" project={this.props.project} />
               <SagewsControl key="worksheet" project={this.props.project} />
               {have_jupyter_notebook ? (

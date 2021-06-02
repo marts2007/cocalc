@@ -4,11 +4,9 @@
  */
 
 // CoCalc libraries
-import * as misc from "smc-util/misc";
 import { webapp_client } from "../../webapp-client";
-import { contains_url } from "smc-util/misc2";
+import { contains_url, days_ago } from "smc-util/misc";
 import { debounce } from "lodash";
-
 // React libraries and Components
 import {
   React,
@@ -20,13 +18,10 @@ import {
   useTypedRedux,
 } from "../../app-framework";
 import { Button, ButtonGroup, Checkbox } from "../../antd-bootstrap";
-
 import { Alert, Card, Row, Col } from "antd";
-
 // CoCalc Components
 import {
   DateTimePicker,
-  HiddenXS,
   Icon,
   LabeledRow,
   Loading,
@@ -34,10 +29,8 @@ import {
   Space,
   TextInput,
   TimeAgo,
-  Tip,
   ErrorDisplay,
 } from "../../r_misc";
-
 import { StudentProjectUpgrades } from "./upgrades";
 import { CourseActions } from "../actions";
 import { ProjectMap } from "../../todo-types";
@@ -51,11 +44,14 @@ import { DeleteSharedProjectPanel } from "../shared-project/delete-shared-projec
 import { TerminalCommandPanel } from "./terminal-command";
 
 import { Nbgrader } from "./nbgrader";
+import { Parallel } from "./parallel";
 
 import { upgrades } from "smc-util/upgrade-spec";
 import { StudentProjectsStartStopPanel } from "./start-stop-panel";
 import { DisableStudentCollaboratorsPanel } from "./disable-collaborators";
-import { CustomSoftwareEnvironment } from "./custom-software-environment";
+import { CustomizeStudentProjectFunctionality } from "./customize-student-project-functionality";
+import { StudentProjectSoftwareEnvironment } from "./student-project-software-environment";
+import { DatastoreConfig } from "./datastore-config";
 
 const STUDENT_COURSE_PRICE = upgrades.subscription.student_course.price.month4;
 
@@ -106,7 +102,6 @@ export const ConfigurationPanel: React.FC<Props> = React.memo(
               persist_id={name + "course-description"}
               attach_to={name}
               rows={6}
-              type="textarea"
               default_value={settings.get("description")}
               on_save={(desc) => actions.configuration.set_description(desc)}
             />
@@ -143,6 +138,10 @@ export const ConfigurationPanel: React.FC<Props> = React.memo(
       await actions.export.to_py();
     }
 
+    async function save_grades_to_json() {
+      await actions.export.to_json();
+    }
+
     function render_save_grades() {
       return (
         <Card title={render_grades_header()}>
@@ -150,6 +149,9 @@ export const ConfigurationPanel: React.FC<Props> = React.memo(
           <ButtonGroup>
             <Button onClick={save_grades_to_csv}>
               <Icon name="file-text-o" /> CSV file...
+            </Button>
+            <Button onClick={save_grades_to_json}>
+              <Icon name="file-code-o" /> JSON file...
             </Button>
             <Button onClick={save_grades_to_py}>
               <Icon name="file-code-o" /> Python file...
@@ -222,7 +224,6 @@ export const ConfigurationPanel: React.FC<Props> = React.memo(
               persist_id={name + "email-invite-body"}
               attach_to={name}
               rows={6}
-              type="textarea"
               default_value={store.get_email_invite()}
               on_save={(body) => actions.configuration.set_email_invite(body)}
               save_disabled={email_body_error != null}
@@ -312,7 +313,7 @@ export const ConfigurationPanel: React.FC<Props> = React.memo(
       if (date) {
         return date;
       } else {
-        return misc.days_ago(-7);
+        return days_ago(-7);
       }
     }
 
@@ -345,6 +346,10 @@ export const ConfigurationPanel: React.FC<Props> = React.memo(
 
     function handle_student_pay_choice(e): void {
       actions.configuration.set_pay_choice("student", e.target.checked);
+      if (e.target.checked) {
+        set_show_students_pay(true);
+        actions.configuration.set_course_info(get_student_pay_when());
+      }
     }
 
     function render_require_students_pay_desc() {
@@ -547,11 +552,13 @@ export const ConfigurationPanel: React.FC<Props> = React.memo(
       return (
         <StudentProjectUpgrades
           name={name}
-          redux={redux}
           upgrade_goal={settings?.get("upgrade_goal")}
           institute_pay={settings?.get("institute_pay")}
           student_pay={settings?.get("student_pay")}
           site_license_id={settings?.get("site_license_id")}
+          site_license_strategy={settings?.get("site_license_strategy")}
+          shared_project_id={settings?.get("shared_project_id")}
+          disabled={configuring_projects}
         />
       );
     }
@@ -597,6 +604,19 @@ export const ConfigurationPanel: React.FC<Props> = React.memo(
       );
     }
 
+    function render_student_project_functionality() {
+      const functionality =
+        settings.get("student_project_functionality")?.toJS() ?? {};
+      return (
+        <CustomizeStudentProjectFunctionality
+          functionality={functionality}
+          onChange={async (opts) =>
+            await actions.configuration.set_student_project_functionality(opts)
+          }
+        />
+      );
+    }
+
     function render_nbgrader() {
       return <Nbgrader name={name} />;
     }
@@ -604,7 +624,7 @@ export const ConfigurationPanel: React.FC<Props> = React.memo(
     return (
       <div className="smc-vfill" style={{ overflowY: "scroll" }}>
         <Row>
-          <Col md={12} style={{ padding: "15px" }}>
+          <Col md={12} style={{ padding: "15px 15px 15px 0" }}>
             {render_require_students_pay()}
             {is_commercial && <br />}
             {render_require_institute_pay()}
@@ -632,13 +652,24 @@ export const ConfigurationPanel: React.FC<Props> = React.memo(
             <br />
             {render_disable_students()}
             <br />
+            {render_student_project_functionality()}
+            <br />
             {render_configure_all_projects()}
             <br />
             {render_push_missing_handouts_and_assignments()}
             <br />
-            <CustomSoftwareEnvironment
+            <StudentProjectSoftwareEnvironment
               actions={actions.configuration}
-              custom_image={settings.get("custom_image")}
+              software_image={settings.get("custom_image")}
+              course_project_id={project_id}
+              inherit_compute_image={settings.get("inherit_compute_image")}
+            />
+            <br />
+            <Parallel name={name} />
+            <br />
+            <DatastoreConfig
+              actions={actions.configuration}
+              datastore={settings.get("datastore")}
             />
           </Col>
         </Row>
@@ -646,17 +677,3 @@ export const ConfigurationPanel: React.FC<Props> = React.memo(
     );
   }
 );
-
-export const ConfigurationPanelHeader: React.FC = () => {
-  return (
-    <Tip
-      delayShow={1300}
-      title="Configuration"
-      tip="Configure various things about your course here, including the title and description.  You can also export all grades in various formats from this page."
-    >
-      <span>
-        <Icon name="cogs" /> <HiddenXS>Configuration</HiddenXS>
-      </span>
-    </Tip>
-  );
-};

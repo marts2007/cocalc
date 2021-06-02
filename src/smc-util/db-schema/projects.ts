@@ -4,8 +4,8 @@
  */
 
 import { deep_copy } from "../misc";
-const { DEFAULT_QUOTAS } = require("../upgrade-spec");
-import { DEFAULT_COMPUTE_IMAGE } from "./defaults";
+import { DEFAULT_QUOTAS } from "../upgrade-spec";
+import { FALLBACK_COMPUTE_IMAGE } from "./defaults";
 import { SCHEMA as schema } from "./index";
 import { Table } from "./types";
 
@@ -20,17 +20,24 @@ Table({
 
     pg_indexes: [
       "last_edited",
+      "created", // TODO: this could have a fillfactor of 100
       "USING GIN (users)", // so get_collaborator_ids is fast
       "USING GIN (host jsonb_path_ops)", // so get_projects_on_compute_server is fast
       "lti_id",
       "USING GIN (state)", // so getting all running projects is fast (e.g. for site_license_usage_log... but also manage-state)
+      "((state #>> '{state}'))", // projecting the "state" (running, etc.) for its own index – the GIN index above still causes a scan, which we want to avoid.
+      "((state ->> 'state'))", // same reason as above. both syntaxes appear and we have to index both.
+      "((state IS NULL))", // not coverd by the above
+      "((settings ->> 'always_running'))", // to quickly know which projects have this setting
+      "((run_quota ->> 'always_running'))", // same reason as above
     ],
 
     user_query: {
       get: {
-        // if you change the interval, change the text in projects.cjsx
-        pg_where: ["last_edited >= NOW() - interval '10 days'", "projects"],
-        options: [{ limit: 20, order_by: "-last_edited" }],
+        pg_where: ["last_edited >= NOW() - interval '21 days'", "projects"],
+        pg_where_load: ["last_edited >= NOW() - interval '2 days'", "projects"],
+        options: [{ limit: 100, order_by: "-last_edited" }],
+        options_load: [{ limit: 15, order_by: "-last_edited" }],
         pg_changefeed: "projects",
         throttle_changes: 2000,
         fields: {
@@ -50,8 +57,8 @@ Table({
           last_active: null,
           action_request: null, // last requested action -- {action:?, time:?, started:?, finished:?, err:?}
           course: null,
-          compute_image: DEFAULT_COMPUTE_IMAGE,
-          addons: null,
+          // if the value is not set, we have to use the old default prior to summer 2020 (Ubuntu 18.04, not 20.04!)
+          compute_image: FALLBACK_COMPUTE_IMAGE,
           created: null,
           env: null,
         },
@@ -259,7 +266,7 @@ Table({
     },
     compute_image: {
       type: "string",
-      desc: `Specify the name of the underlying (kucalc) compute image (default: '${DEFAULT_COMPUTE_IMAGE}')`,
+      desc: `Specify the name of the underlying (kucalc) compute image.`,
     },
     addons: {
       type: "map",
@@ -388,4 +395,83 @@ Table({
     project_id: true,
     invite_requests: true,
   }, // {account_id:{timestamp:?, message:?}, ...}
+});
+
+/*
+Table to get/set the datastore config in addons.
+
+The main idea is to set/update/delete entries in the dict addons.datastore.[key] = {...}
+*/
+Table({
+  name: "project_datastore",
+  rules: {
+    virtual: "projects",
+    primary_key: "project_id",
+    user_query: {
+      set: {
+        // this also deals with delete requests
+        fields: {
+          project_id: true,
+          addons: true,
+        },
+        async instead_of_change(
+          db,
+          _old_value,
+          new_val,
+          account_id,
+          cb
+        ): Promise<void> {
+          try {
+            // to delete an entry, pretend to set the datastore = {delete: [name]}
+            if (typeof new_val.addons.datastore.delete === "string") {
+              await db.project_datastore_del(
+                account_id,
+                new_val.project_id,
+                new_val.addons.datastore.delete
+              );
+              cb(undefined);
+            } else {
+              // query should set addons.datastore.[new key] = config, such that we see here
+              // new_val = {"project_id":"...","addons":{"datastore":{"key3":{"type":"xxx", ...}}}}
+              // which will be merged into the existing addons.datastore dict
+              const res = await db.project_datastore_set(
+                account_id,
+                new_val.project_id,
+                new_val.addons.datastore
+              );
+              cb(undefined, res);
+            }
+          } catch (err) {
+            cb(`${err}`);
+          }
+        },
+      },
+      get: {
+        fields: {
+          project_id: true,
+          addons: true,
+        },
+        async instead_of_query(db, opts, cb): Promise<void> {
+          if (opts.multi) {
+            throw Error("'multi' is not implemented");
+          }
+          try {
+            // important: the config dicts for each key must not expose secret credentials!
+            // check if opts.query.addons === null ?!
+            const data = await db.project_datastore_get(
+              opts.account_id,
+              opts.query.project_id
+            );
+            cb(undefined, data);
+          } catch (err) {
+            cb(`${err}`);
+          }
+        },
+      },
+    },
+  },
+  fields: {
+    project_id: true,
+    addons: true,
+  },
 });

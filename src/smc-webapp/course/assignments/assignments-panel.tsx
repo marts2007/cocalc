@@ -28,7 +28,7 @@ import {
   FormGroup,
 } from "../../antd-bootstrap";
 
-import { Alert, Card, Row, Col } from "antd";
+import { Alert, Card, Row, Col, Input } from "antd";
 
 import { Set, Map } from "immutable";
 
@@ -66,8 +66,9 @@ import {
 
 import { Progress } from "../common/progress";
 import { SkipCopy } from "./skip";
-
 import { ConfigurePeerGrading } from "./configure-peer";
+import { NbgraderButton } from "../nbgrader/nbgrader-button";
+import { DebounceInput } from "react-debounce-input";
 
 interface AssignmentsPanelReactProps {
   frame_id?: string;
@@ -380,7 +381,7 @@ export const AssignmentsPanel = rclass<AssignmentsPanelReactProps>(
       );
 
       return (
-        <div className={"smc-vfill"} style={{ margin: "0 15px" }}>
+        <div className={"smc-vfill"} style={{ margin: "0" }}>
           {header}
           {shown_assignments.length > 0
             ? this.render_assignment_table_header()
@@ -439,6 +440,7 @@ interface AssignmentState {
   copy_confirm_peer_assignment: boolean;
   copy_confirm_peer_collect: boolean;
   copy_confirm_return_graded: boolean;
+  student_search: string;
 }
 
 class Assignment extends Component<AssignmentProps, AssignmentState> {
@@ -454,6 +456,7 @@ class Assignment extends Component<AssignmentProps, AssignmentState> {
       copy_confirm_peer_assignment: false,
       copy_confirm_peer_collect: false,
       copy_confirm_return_graded: false,
+      student_search: "",
     };
   }
 
@@ -728,7 +731,18 @@ class Assignment extends Component<AssignmentProps, AssignmentState> {
 
       v.push(
         <Row key="header-control">
-          <Col md={20} offset={4} key="buttons">
+          <Col md={4} key="search" style={{ paddingRight: "15px" }}>
+            <DebounceInput
+              debounceTimeout={500}
+              element={Input as any}
+              placeholder={"Find students..."}
+              value={this.state.student_search}
+              onChange={(e) =>
+                this.setState({ student_search: e.target.value })
+              }
+            />
+          </Col>
+          <Col md={20} key="buttons">
             <Row>{buttons}</Row>
           </Col>
         </Row>
@@ -765,6 +779,7 @@ class Assignment extends Component<AssignmentProps, AssignmentState> {
             active_student_sort={this.props.active_student_sort}
             active_feedback_edits={this.props.active_feedback_edits}
             nbgrader_run_info={this.props.nbgrader_run_info}
+            search={this.state.student_search}
           />
           {this.render_note()}
           <br />
@@ -1038,6 +1053,20 @@ class Assignment extends Component<AssignmentProps, AssignmentState> {
     );
   }
 
+  private render_parallel() {
+    const n = this.get_store().get_copy_parallel();
+    return (
+      <Tip
+        title={`Parallel limit: copy ${n} assignments at a time`}
+        tip="This is the max number of assignments to copy in parallel.  Change this in course configuration."
+      >
+        <div style={{ marginTop: "10px", fontWeight: 400 }}>
+          Copy up to {n} assignments at once.
+        </div>
+      </Tip>
+    );
+  }
+
   private render_copy_confirm_to_all(
     step: AssignmentCopyStep,
     status
@@ -1063,6 +1092,7 @@ class Assignment extends Component<AssignmentProps, AssignmentState> {
           </Button>
           {this.render_copy_cancel(step)}
         </ButtonGroup>
+        {this.render_parallel()}
       </div>
     );
     return (
@@ -1188,6 +1218,7 @@ class Assignment extends Component<AssignmentProps, AssignmentState> {
         {this.state[`copy_confirm_all_${step}`]
           ? this.render_copy_confirm_overwrite_all(step)
           : undefined}
+        {this.render_parallel()}
       </div>
     );
     return (
@@ -1414,7 +1445,7 @@ class Assignment extends Component<AssignmentProps, AssignmentState> {
       : "square-o";
     return (
       <Button onClick={this.toggle_skip_grading}>
-        <Icon name={icon} /> Skip grading
+        <Icon name={icon} /> Skip entering grades
       </Button>
     );
   }
@@ -1429,42 +1460,12 @@ class Assignment extends Component<AssignmentProps, AssignmentState> {
       // decided to skip grading this.
       return;
     }
-    let running = false;
-    if (this.props.nbgrader_run_info != null) {
-      const t = this.props.nbgrader_run_info.get(
-        this.props.assignment.get("assignment_id")
-      );
-      if (t && new Date().valueOf() - t <= 1000 * 60 * 10) {
-        // Time starting is set and it's also within the last few minutes.
-        // This "few minutes" is just in case -- we probably shouldn't need
-        // that at all ever, but it could make cocalc state usable in case of
-        // weird issues, I guess).  User could also just close and re-open
-        // the course file, which resets this state completely.
-        running = true;
-      }
-    }
-    const label = running ? (
-      <span>
-        {" "}
-        <Icon name="cc-icon-cocalc-ring" spin /> Running nbgrader
-      </span>
-    ) : (
-      <span>Run nbgrader</span>
-    );
+
     return (
-      <div style={{ marginBottom: "5px 0" }}>
-        <Button
-          disabled={running}
-          key="nbgrader"
-          onClick={() => {
-            this.get_actions().assignments.run_nbgrader_for_all_students(
-              this.props.assignment.get("assignment_id")
-            );
-          }}
-        >
-          <Icon name="graduation-cap" /> {label}
-        </Button>
-      </div>
+      <NbgraderButton
+        assignment_id={this.props.assignment.get("assignment_id")}
+        name={this.props.name}
+      />
     );
   }
 
@@ -1711,6 +1712,7 @@ interface StudentListForAssignmentProps {
   active_student_sort: SortDescription;
   active_feedback_edits: IsGradingMap;
   nbgrader_run_info?: NBgraderRunInfo;
+  search: string;
 }
 
 class StudentListForAssignment extends Component<
@@ -1727,6 +1729,7 @@ class StudentListForAssignment extends Component<
       "active_student_sort",
       "active_feedback_edits",
       "nbgrader_run_info",
+      "search",
     ]);
     if (x) {
       delete this.student_list;
@@ -1752,12 +1755,6 @@ class StudentListForAssignment extends Component<
       student_id
     );
     const edited_feedback = this.props.active_feedback_edits.get(key);
-    let edited_comments: string | undefined;
-    let edited_grade: string | undefined;
-    if (edited_feedback != undefined) {
-      edited_comments = edited_feedback.get("edited_comments");
-      edited_grade = edited_feedback.get("edited_grade");
-    }
     return (
       <StudentAssignmentInfo
         key={student_id}
@@ -1773,6 +1770,9 @@ class StudentListForAssignment extends Component<
           this.props.assignment.get("assignment_id"),
           student_id
         )}
+        nbgrader_score_ids={store.get_nbgrader_score_ids(
+          this.props.assignment.get("assignment_id")
+        )}
         comments={store.get_comments(
           this.props.assignment.get("assignment_id"),
           student_id
@@ -1782,8 +1782,6 @@ class StudentListForAssignment extends Component<
           this.props.assignment.get("assignment_id")
         )}
         is_editing={!!edited_feedback}
-        edited_comments={edited_comments}
-        edited_grade={edited_grade}
         nbgrader_run_info={this.props.nbgrader_run_info}
       />
     );
@@ -1799,11 +1797,23 @@ class StudentListForAssignment extends Component<
       this.props.user_map,
       this.props.redux
     );
+    const store = this.get_store();
 
-    // Remove deleted students
+    // Remove deleted students or students not matching the search
+    const terms = misc.search_split(this.props.search);
     const v1: any[] = [];
     for (const x of v0) {
-      if (!x.deleted) v1.push(x);
+      if (x.deleted) continue;
+      if (
+        terms.length > 0 &&
+        !misc.search_match(
+          store.get_student_name(x.student_id).toLowerCase(),
+          terms
+        )
+      ) {
+        continue;
+      }
+      v1.push(x);
     }
 
     v1.sort(util.pick_student_sorter(this.props.active_student_sort.toJS()));

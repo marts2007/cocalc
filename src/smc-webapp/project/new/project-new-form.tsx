@@ -30,6 +30,7 @@ import { AvailableFeatures } from "./types";
 import { ProjectMap } from "smc-webapp/todo-types";
 import { PathNavigator } from "../explorer/path-navigator";
 
+
 interface ReactProps {
   project_id: string;
   actions: ProjectActions;
@@ -98,8 +99,18 @@ export const ProjectNewForm = rclass<ReactProps>(
       if (!this.state.filename) {
         return;
       }
+      // If state.filename='a.txt', but ext is "sagews", we make the file
+      // be called "a.sagews", not "a.txt.sagews":
+      const filename_ext = misc.filename_extension(this.state.filename);
+      const name =
+        filename_ext && ext && filename_ext != ext
+          ? this.state.filename.slice(
+              0,
+              this.state.filename.length - filename_ext.length - 1
+            )
+          : this.state.filename;
       this.props.actions.create_file({
-        name: this.state.filename,
+        name,
         ext,
         current_path: this.props.current_path,
       });
@@ -133,11 +144,8 @@ export const ProjectNewForm = rclass<ReactProps>(
       this.submit();
     };
 
-    private render_close_button(): JSX.Element | undefined {
-      const { on_close } = this.props;
-      if (!on_close) {
-        return;
-      }
+    private render_close_button(): JSX.Element {
+      const on_close = this.props.on_close ?? this.show_files.bind(this);
       return (
         <Button onClick={on_close} className={"pull-right"}>
           Close
@@ -217,9 +225,6 @@ export const ProjectNewForm = rclass<ReactProps>(
     }
 
     private render_close_row(): JSX.Element | undefined {
-      if (!this.props.on_close) {
-        return;
-      }
       return (
         <Row>
           <Col sm={9}>
@@ -247,6 +252,7 @@ export const ProjectNewForm = rclass<ReactProps>(
     }
 
     private render_upload(): JSX.Element {
+      
       return (
         <>
           <Row style={{ marginTop: "20px" }}>
@@ -275,24 +281,42 @@ export const ProjectNewForm = rclass<ReactProps>(
       );
     }
 
-    private render_new_file_folder(): JSX.Element {
+    private render_create(): JSX.Element {
+      let desc: string;
+      if (this.state.filename.endsWith("/")) {
+        desc = "folder";
+      } else if (
+        this.state.filename.toLowerCase().startsWith("http:") ||
+        this.state.filename.toLowerCase().startsWith("https:")
+      ) {
+        desc = "download";
+      } else {
+        const ext = misc.filename_extension(this.state.filename);
+        if (ext) {
+          desc = `${ext} file`;
+        } else {
+          desc = "file with no extension";
+        }
+      }
+      return (
+        <Tip
+          icon="file"
+          title={`Create ${desc}`}
+          tip={`Create ${desc}.  You can also press return.`}
+        >
+          <Button
+            disabled={this.state.filename.trim() == ""}
+            onClick={() => this.submit()}
+          >
+            Create {desc}
+          </Button>
+        </Tip>
+      );
+    }
+
+    private render_more_types(): JSX.Element {
       return (
         <>
-          <Tip
-            title={"Folder"}
-            placement={"left"}
-            icon={"folder-open-o"}
-            tip={
-              "Create a folder (sub-directory) in which to store and organize your files.  CoCalc provides a full featured filesystem."
-            }
-          >
-            <NewFileButton
-              icon={"folder-open-o"}
-              name={"Folder"}
-              on_click={this.create_folder}
-              className={"pull-right"}
-            />
-          </Tip>
           <Tip
             icon="file"
             title="Any Type of File"
@@ -363,6 +387,10 @@ export const ProjectNewForm = rclass<ReactProps>(
       }
     }
 
+    private show_files(): void {
+      this.props.actions.set_active_tab("files");
+    }
+
     render(): JSX.Element {
       //key is so autofocus works below
       return (
@@ -370,12 +398,19 @@ export const ProjectNewForm = rclass<ReactProps>(
           show_header={this.props.show_header}
           icon={"plus-circle"}
           title={this.render_title()}
-          close={this.props.on_close}
+          close={this.props.on_close ?? this.show_files.bind(this)}
         >
           <Row key={this.props.default_filename}>
             <Col sm={12}>
-              <div style={{ color: "#666", paddingBottom: "5px" }}>
-                Name your file, folder or paste in a link
+              <div
+                style={{
+                  color: "#666",
+                  paddingBottom: "5px",
+                  fontSize: "16px",
+                }}
+              >
+                Name your file, folder or paste in a link. End filename with /
+                to make a folder.
               </div>
               <div
                 style={{
@@ -394,19 +429,29 @@ export const ProjectNewForm = rclass<ReactProps>(
                 >
                   {this.render_filename_form()}
                 </div>
+                <div style={{ flex: "0 0 auto", marginRight: "10px" }}>
+                  {this.render_create()}
+                </div>
                 <div style={{ flex: "0 0 auto" }}>
-                  {this.render_new_file_folder()}
+                  {this.render_more_types()}
                 </div>
               </div>
               {this.state.extension_warning
                 ? this.render_no_extension_alert()
                 : undefined}
               {this.props.file_creation_error ? this.render_error() : undefined}
-              <div style={{ color: "#666", paddingBottom: "5px" }}>
-                Select the type of file
+              <div
+                style={{
+                  color: "#666",
+                  paddingBottom: "5px",
+                  fontSize: "16px",
+                }}
+              >
+                What would you like to create?
               </div>
               <FileTypeSelector
                 create_file={this.submit}
+                create_folder={this.create_folder.bind(this)}
                 project_id={this.props.project_id}
               >
                 <Tip

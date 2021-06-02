@@ -5,7 +5,8 @@
 
 import * as React from "react";
 import { Project } from "./types";
-import { Icon, SettingBox, DeletedProjectWarning } from "smc-webapp/r_misc";
+import { Icon, SettingBox } from "smc-webapp/r_misc";
+import { DeletedProjectWarning } from "../warnings/deleted";
 import { Button, Well, Alert, ButtonToolbar, Row, Col } from "react-bootstrap";
 import { ProjectsActions } from "smc-webapp/todo-types";
 import { webapp_client } from "../../webapp-client";
@@ -56,7 +57,12 @@ export class HideDeleteBox extends React.Component<Props, State> {
     if (this.props.project.get("deleted")) {
       return <DeletedProjectWarning />;
     } else {
-      return <span>Delete this project for everyone. You can undo this.</span>;
+      return (
+        <span>
+          Delete this project for everyone. You can undo this for a few days
+          after which it becomes permanent and all data in this project is lost.
+        </span>
+      );
     }
   }
 

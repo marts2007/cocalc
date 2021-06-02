@@ -32,9 +32,10 @@ sign_in              = require('./sign-in')
 hub_projects         = require('./projects')
 {StripeClient}       = require('./stripe/client')
 {get_support}        = require('./support')
-{send_email, create_email_body} = require('./email')
+{send_email, send_invite_email} = require('./email')
 {api_key_action}     = require('./api/manage')
 {create_account, delete_account} = require('./client/create-account')
+{purchase_license}   = require('./client/license')
 db_schema            = require('smc-util/db-schema')
 { escapeHtml }       = require("escape-html")
 {CopyPath}           = require('./copy-path')
@@ -47,8 +48,9 @@ underscore = require('underscore')
 {record_user_tracking} = require('./postgres/user-tracking')
 {project_has_network_access} = require('./postgres/project-queries')
 {is_paying_customer} = require('./postgres/account-queries')
+{get_personal_user} = require('./postgres/personal')
 
-{SENDGRID_ASM_INVITES} = require('smc-util/theme')
+{PW_RESET_ENDPOINT, PW_RESET_KEY} = require('./password')
 
 DEBUG2 = !!process.env.SMC_DEBUG2
 
@@ -116,6 +118,7 @@ class exports.Client extends EventEmitter
             compute_server : required
             host           : undefined
             port           : undefined
+            personal        : undefined
 
         @conn            = @_opts.conn
         @logger          = @_opts.logger
@@ -265,9 +268,33 @@ class exports.Client extends EventEmitter
         @signed_out()  # so can't do anything with projects, etc.
         @push_to_client(message.remember_me_failed(reason:reason))
 
+    get_personal_user: () =>
+        if @account_id or not @conn? or not @_opts.personal
+            # there is only one account
+            return
+        dbg = @dbg("check_for_remember_me")
+        dbg("personal mode")
+        try
+            signed_in_mesg = {account_id:await get_personal_user(@database), event:'signed_in'}
+            # sign them in if not already signed in (due to async this could happen
+            # by get_personal user getting called twice at once).
+            if @account_id != signed_in_mesg.account_id
+                signed_in_mesg.hub = @_opts.host + ':' + @_opts.port
+                @signed_in(signed_in_mesg)
+                @push_to_client(signed_in_mesg)
+        catch err
+            dbg("remember_me: personal mode error", err.toString())
+            @remember_me_failed("error getting personal user -- #{err}")
+        return
+
     check_for_remember_me: () =>
         return if not @conn?
         dbg = @dbg("check_for_remember_me")
+
+        if @_opts.personal
+            @get_personal_user()
+            return
+
         value = @_remember_me_value
         if not value?
             @remember_me_failed("no remember_me cookie")
@@ -300,17 +327,6 @@ class exports.Client extends EventEmitter
                     @hash_session_id   = hash
                     @signed_in(signed_in_mesg)
                     @push_to_client(signed_in_mesg)
-
-    cap_session_limits: (limits) ->
-        ###
-        Capping resource limits; client can request anything.
-        We cap what they get based on the account type, etc...
-        This functions *modifies* the limits object in place.
-        ###
-        if @account_id?  # logged in
-            misc.min_object(limits, SESSION_LIMITS)  # TODO
-        else
-            misc.min_object(limits, SESSION_LIMITS_NOT_LOGGED_IN)  # TODO
 
     push_to_client: (mesg, cb) =>
         ###
@@ -713,6 +729,9 @@ class exports.Client extends EventEmitter
 
     # Messages: Account creation, deletion, sign in, sign out
     mesg_create_account: (mesg) =>
+        if @_opts.personal
+            @error_to_client(id:mesg.id, error:"account creation not allowed on personal server")
+            return
         create_account
             client   : @
             mesg     : mesg
@@ -977,6 +996,7 @@ class exports.Client extends EventEmitter
                     title       : mesg.title
                     description : mesg.description
                     image       : mesg.image
+                    license     : mesg.license
                     cb          : (err, _project_id) =>
                         project_id = _project_id; cb(err)
             (cb) =>
@@ -1244,6 +1264,9 @@ class exports.Client extends EventEmitter
                                 cb()
 
                 (cb) =>
+                    if locals.done or (not locals.email_address)
+                        cb()
+                        return
                     @database.get_server_settings_cached
                         cb : (err, settings) =>
                             if err
@@ -1287,34 +1310,25 @@ class exports.Client extends EventEmitter
                     if mesg.subject?
                         subject  = mesg.subject
 
-                    try
-                        email_body = create_email_body(subject, mesg.email, locals.email_address, mesg.title, mesg.link2proj, await @allow_urls_in_emails(mesg.project_id))
-                    catch err
-                        cb(err)
-                        return
-
-                    # asm_group for invites stored in theme.js https://app.sendgrid.com/suppressions/advanced_suppression_manager
-                    opts =
-                        to           : locals.email_address
-                        bcc          : 'invites@cocalc.com'
-                        fromname     : 'CoCalc'
-                        from         : 'invites@cocalc.com'
-                        replyto      : mesg.replyto ? 'help@cocalc.com'
-                        replyto_name : mesg.replyto_name
-                        subject      : subject
-                        category     : "invite"
-                        asm_group    : SENDGRID_ASM_INVITES
-                        body         : email_body
-                        settings     : locals.settings
-                        cb           : (err) =>
+                    send_invite_email
+                        to            : locals.email_address
+                        subject       : subject
+                        email         : mesg.email
+                        email_address : locals.email_address
+                        title         : mesg.title
+                        allow_urls    : await @allow_urls_in_emails(mesg.project_id)
+                        replyto       : mesg.replyto ? settings.organization_email
+                        replyto_name  : mesg.replyto_name
+                        link2proj     : mesg.link2proj
+                        settings      : locals.settings
+                        cb            : (err) =>
                             if err
                                 dbg("FAILED to send email to #{locals.email_address}  -- err=#{misc.to_json(err)}")
                             @database.sent_project_invite
-                                project_id : mesg.project_id
-                                to         : locals.email_address
-                                error      : err
+                                project_id   : mesg.project_id
+                                to           : locals.email_address
+                                error        : err
                             cb(err) # call the cb one scope up so that the client is informed that we sent the invite (or not)
-                    send_email(opts)
 
                 ], (err) =>
                         if err
@@ -1323,6 +1337,35 @@ class exports.Client extends EventEmitter
                             @push_to_client(message.success(id:mesg.id))
                 )
 
+    mesg_add_license_to_project: (mesg) =>
+        dbg = @dbg('mesg_add_license_to_project')
+        dbg()
+        @touch()
+        @_check_project_access mesg.project_id, (err) =>
+            if err
+                dbg("failed -- #{err}")
+                @error_to_client(id:mesg.id, error:"must have write access to #{mesg.project_id} -- #{err}")
+                return
+            try
+                await @database.add_license_to_project(mesg.project_id, mesg.license_id)
+                @success_to_client(id:mesg.id)
+            catch err
+                @error_to_client(id:mesg.id, error:"#{err}")
+
+    mesg_remove_license_from_project: (mesg) =>
+        dbg = @dbg('mesg_remove_license_from_project')
+        dbg()
+        @touch()
+        @_check_project_access mesg.project_id, (err) =>
+            if err
+                dbg("failed -- #{err}")
+                @error_to_client(id:mesg.id, error:"must have write access to #{mesg.project_id} -- #{err}")
+                return
+            try
+                await @database.remove_license_from_project(mesg.project_id, mesg.license_id)
+                @success_to_client(id:mesg.id)
+            catch err
+                @error_to_client(id:mesg.id, error:"#{err}")
 
     mesg_invite_noncloud_collaborators: (mesg) =>
         dbg = @dbg('mesg_invite_noncloud_collaborators')
@@ -1414,6 +1457,9 @@ class exports.Client extends EventEmitter
                                         cb()
 
                     (cb) =>
+                        if locals.done
+                            cb()
+                            return
                         @database.get_server_settings_cached
                             cb: (err, settings) =>
                                 if err
@@ -1436,35 +1482,26 @@ class exports.Client extends EventEmitter
                         if mesg.subject?
                             subject  = mesg.subject
 
-                        try
-                            email_body = create_email_body(subject, mesg.email, email_address, mesg.title, mesg.link2proj, await @allow_urls_in_emails(mesg.project_id))
-                            cb()
-                        catch err
-                            cb(err)
-                            return
-
-                        # asm_group for invites is stored in theme.js https://app.sendgrid.com/suppressions/advanced_suppression_manager
-                        opts =
-                            to           : email_address
-                            bcc          : 'invites@cocalc.com'
-                            fromname     : 'CoCalc'
-                            from         : 'invites@cocalc.com'
-                            replyto      : mesg.replyto ? 'help@cocalc.com'
-                            replyto_name : mesg.replyto_name
-                            subject      : subject
-                            category     : "invite"
-                            asm_group    : SENDGRID_ASM_INVITES
-                            body         : email_body
-                            settings     : locals.settings
-                            cb           : (err) =>
+                        dbg("send_email invite to #{email_address}")
+                        send_invite_email
+                            to            : email_address
+                            subject       : subject
+                            email         : mesg.email
+                            email_address : email_address
+                            title         : mesg.title
+                            allow_urls    : await @allow_urls_in_emails(mesg.project_id)
+                            replyto       : mesg.replyto ? settings.organization_email
+                            replyto_name  : mesg.replyto_name
+                            link2proj     : mesg.link2proj
+                            settings      : locals.settings
+                            cb            : (err) =>
                                 if err
                                     dbg("FAILED to send email to #{email_address}  -- err=#{misc.to_json(err)}")
                                 @database.sent_project_invite
                                     project_id : mesg.project_id
                                     to         : email_address
                                     error      : err
-                        dbg("send_email invite to #{email_address}")
-                        send_email(opts)
+                                cb(err) # call the cb one scope up so that the client is informed that we sent the invite (or not)
 
                 ], cb)
 
@@ -1937,9 +1974,6 @@ class exports.Client extends EventEmitter
     mesg_stripe_update_source: (mesg) =>
         @handle_stripe_mesg(mesg)
 
-    mesg_stripe_get_plans: (mesg) =>
-        @handle_stripe_mesg(mesg)
-
     mesg_stripe_create_subscription: (mesg) =>
         @handle_stripe_mesg(mesg)
 
@@ -1971,6 +2005,17 @@ class exports.Client extends EventEmitter
     mesg_remove_all_upgrades: (mesg) =>
         mesg.event = 'stripe_remove_all_upgrades'     # for backward compat
         @handle_stripe_mesg(mesg)
+
+    mesg_stripe_sync_site_license_subscriptions: (mesg) =>
+        @handle_stripe_mesg(mesg)
+
+    mesg_purchase_license: (mesg) =>
+        try
+            await @_stripe_client ?= new StripeClient(@)
+            resp = await purchase_license(@database, @_stripe_client, @account_id, mesg.info, @dbg("purchase_license"))
+            @push_to_client(message.purchase_license_resp(id:mesg.id, resp:resp))
+        catch err
+            @error_to_client(id:mesg.id, error:err.toString())
 
     #  END stripe-related functionality
 
@@ -2162,7 +2207,7 @@ class exports.Client extends EventEmitter
             # as admins send one manually, they typically need more time, so 1 day instead.
             # We used 8 hours for a while and it is often not enough time.
             id = await callback2(@database.set_password_reset, {email_address : mesg.email_address, ttl:24*60*60});
-            mesg.link = "/app?forgot=#{id}"
+            mesg.link = "#{PW_RESET_ENDPOINT}?#{PW_RESET_KEY}=#{id}"
             @push_to_client(mesg)
         catch err
             dbg("failed -- #{err}")

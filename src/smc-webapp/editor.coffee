@@ -27,13 +27,12 @@ _ = underscore = require('underscore')
 {webapp_client} = require('./webapp-client')
 {EventEmitter}  = require('events')
 {alert_message} = require('./alerts')
-{project_tasks} = require('./project_tasks')
 
 feature = require('./feature')
 IS_MOBILE = feature.IS_MOBILE
 
 misc = require('smc-util/misc')
-misc_page = require('./misc_page')
+{drag_start_iframe_disable, drag_stop_iframe_enable, sagews_canonical_mode} = require('./misc-page')
 
 # Ensure CodeMirror is available and configured
 require('./codemirror/codemirror')
@@ -49,6 +48,8 @@ require('./console')
 syncdoc  = require('./syncdoc')
 sagews   = require('./sagews/sagews')
 printing = require('./printing')
+
+{file_nonzero_size} = require('./project/utils')
 
 {render_snippets_dialog} = require('./assistant/legacy')
 
@@ -92,7 +93,6 @@ exports.file_icon_class = file_icon_class = (ext) ->
 
 # This defines a bunch of custom modes and gets some info about special case of sagews
 {sagews_decorator_modes} = require('./codemirror/custom-modes')
-misc_page.define_codemirror_extensions()
 
 exports.file_options = require("./editor-tmp").file_options
 
@@ -416,6 +416,7 @@ class CodeMirrorEditor extends FileEditor
             "Shift-Ctrl-C" : (editor)   => @interrupt_key()
 
             "Ctrl-Space"   : "autocomplete"
+            "Alt-Space": "autocomplete"
 
         if feature.IS_TOUCH
             # Better more external keyboard friendly shortcuts, motivated by iPad.
@@ -583,9 +584,8 @@ class CodeMirrorEditor extends FileEditor
     init_file_actions: () =>
         if not @element?
             return
-        actions = redux.getProjectActions(@project_id)
         dom_node = @element.find('.smc-editor-file-info-dropdown')[0]
-        require('./r_misc').render_file_info_dropdown(@filename, actions, dom_node, @opts.public_access)
+        require('./editors/file-info-dropdown').render_file_info_dropdown(@filename, @project_id, dom_node, @opts.public_access)
 
     init_draggable_splits: () =>
         @_layout1_split_pos = @local_storage("layout1_split_pos")
@@ -596,9 +596,9 @@ class CodeMirrorEditor extends FileEditor
             axis        : 'y'
             containment : @element
             zIndex      : 10
-            start       : misc_page.drag_start_iframe_disable
+            start       : drag_start_iframe_disable
             stop        : (event, ui) =>
-                misc_page.drag_stop_iframe_enable()
+                drag_stop_iframe_enable()
                 # compute the position of bar as a number from 0 to 1, with
                 # 0 being at top (left), 1 at bottom (right), and .5 right in the middle
                 e   = @element.find(".webapp-editor-codemirror-input-container-layout-1")
@@ -615,9 +615,9 @@ class CodeMirrorEditor extends FileEditor
             axis        : 'x'
             containment : @element
             zIndex      : 100
-            start       : misc_page.drag_start_iframe_disable
+            start       : drag_start_iframe_disable
             stop        : (event, ui) =>
-                misc_page.drag_stop_iframe_enable()
+                drag_stop_iframe_enable()
                 # compute the position of bar as a number from 0 to 1, with
                 # 0 being at top (left), 1 at bottom (right), and .5 right in the middle
                 e     = @element.find(".webapp-editor-codemirror-input-container-layout-2")
@@ -1126,7 +1126,7 @@ class CodeMirrorEditor extends FileEditor
                         date       : dialog.find(".webapp-file-print-date").text()
                         contents   : dialog.find(".webapp-file-print-contents").is(":checked")
                         subdir     : is_subdir
-                        base_url   : require('./misc_page').BASE_URL
+                        base_url   : require('./misc').BASE_URL
                         extra_data : misc.to_json(@syncdoc.print_to_pdf_data())  # avoid de/re-json'ing
 
                     printing.Printer(@, @filename + '.pdf').print
@@ -1143,16 +1143,13 @@ class CodeMirrorEditor extends FileEditor
                     if is_subdir or not pdf?
                         cb(); return
                     # does the pdf file exist?
-                    project_tasks(@project_id).file_nonzero_size
-                        path    : pdf
-                        cb      : (err) =>
-                            if err
-                                err_msg = 'Unable to convert file to PDF. '
-                                if not is_subdir
-                                    err_msg += "Enable 'Keep generated files in a sub-directory...' and check for Latex errors."
-                                cb(err_msg)
-                            else
-                                cb()
+                    if not await file_nonzero_size(@project_id, pdf)
+                        err_msg = 'Unable to convert file to PDF. '
+                        if not is_subdir
+                            err_msg += "Enable 'Keep generated files in a sub-directory...' and check for Latex errors."
+                        cb(err_msg)
+                    else
+                        cb()
                 (cb) =>
                     if is_subdir or not pdf?
                         cb(); return
@@ -1168,22 +1165,19 @@ class CodeMirrorEditor extends FileEditor
                     {join} = require('path')
                     subdir_texfile = join(p.head, "#{base}-sagews2pdf", "tmp.tex")
                     # check if generated tmp.tex exists and has nonzero size
-                    project_tasks(@project_id).file_nonzero_size
-                        path    : subdir_texfile
-                        cb      : (err) =>
-                            if err
-                                cb('Unable to create directory of temporary Latex files.')
-                            else
-                                tempdir_link = $('<a>').text('Click to open temporary file')
-                                tempdir_link.click =>
-                                    redux.getProjectActions(@project_id).open_file
-                                        path       : subdir_texfile
-                                        foreground : true
-                                    dialog.modal('hide')
-                                    return false
-                                $print_tempdir.html(tempdir_link)
-                                $print_tempdir.show()
-                                cb()
+                    if not await file_nonzero_size(@project_id, subdir_texfile)
+                        cb('Unable to create directory of temporary Latex files.')
+                    else
+                        tempdir_link = $('<a>').text('Click to open temporary file')
+                        tempdir_link.click =>
+                            redux.getProjectActions(@project_id).open_file
+                                path       : subdir_texfile
+                                foreground : true
+                            dialog.modal('hide')
+                            return false
+                        $print_tempdir.html(tempdir_link)
+                        $print_tempdir.show()
+                        cb()
                 (cb) =>
                     # if there is no subdirectory of temporary files, print generated pdf file
                     if not is_subdir
@@ -1559,12 +1553,11 @@ class CodeMirrorEditor extends FileEditor
         # not all textedit buttons are known
         textedit_only_show_known_buttons = (name) =>
             EDIT_COMMANDS = require('./editors/editor-button-bar').commands
-            {sagews_canonical_mode} = require('./misc_page')
             default_mode = @focused_codemirror()?.get_edit_mode() ? 'sage'
             mode = sagews_canonical_mode(name, default_mode)
             #if DEBUG then console.log "textedit_only_show_known_buttons: mode #{name} → #{mode}"
             known_commands = misc.keys(EDIT_COMMANDS[mode] ? {})
-            # see special cases in 'textedit_command' and misc_page: 'edit_selection'
+            # see special cases in 'textedit_command' and codemirror/extensions: 'edit_selection'
             known_commands = known_commands.concat(['link', 'image', 'SpecialChar', 'font_size'])
             for button in @textedit_buttons.find('a')
                 button = $(button)
@@ -1964,3 +1957,4 @@ cm_refresh = (cm) ->
         cm.refresh()
     catch err
         console.warn("cm refresh err", err)
+

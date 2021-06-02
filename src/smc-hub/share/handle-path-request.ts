@@ -7,7 +7,7 @@ import {
   filename_extension,
   is_valid_uuid_string,
   path_split,
-} from "smc-util/misc2";
+} from "smc-util/misc";
 
 import {
   default_to_raw,
@@ -172,7 +172,7 @@ export async function handle_path_request(opts: {
           public_paths.is_public,
           settings,
           description,
-          `/${info.get("id")}/${path}`
+          `/${info.get("id")}/${path}`,
         ),
         viewer,
         hidden: req.query.hidden,

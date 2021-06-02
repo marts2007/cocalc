@@ -14,16 +14,14 @@ $                = window.$
 {debounce}       = require('underscore')
 
 {EventEmitter}   = require('events')
-{alert_message}  = require('./alerts')
 misc             = require('smc-util/misc')
 {copy, filename_extension, required, defaults, to_json, uuid, from_json} = require('smc-util/misc')
 {redux}          = require('./app-framework')
 {alert_message}  = require('./alerts')
 
-misc_page        = require('./misc_page')
-
 templates        = $("#webapp-console-templates")
 console_template = templates.find(".webapp-console")
+{getStudentProjectFunctionality} = require('smc-webapp/course/')
 
 {delay} = require('awaiting')
 
@@ -188,6 +186,11 @@ class Console extends EventEmitter
         #window.c = @
 
     connect: =>
+        if getStudentProjectFunctionality(@opts.project_id).disableTerminals
+            # short lines since this is only used on mobile.
+            @render("Terminals are currently disabled\r\nin this project.\r\nPlease contact your
+        instructor\r\nif you have questions.\r\n");
+            return;
         api = await webapp_client.project_client.api(@project_id)
         # aux_path for compat with new frame terminal editor.
         {aux_file} = require('./frame-editors/frame-tree/util')
@@ -453,10 +456,6 @@ class Console extends EventEmitter
             if not getSelection().toString()
                 @unpause_rendering()
                 return
-            s = misc_page.get_selection_start_node()
-            if s.closest(e).length == 0
-                # nothing in the terminal is selected
-                @unpause_rendering()
 
         e.on 'copy', =>
             @unpause_rendering()
@@ -821,7 +820,10 @@ class Console extends EventEmitter
         x = @conn
         delete @conn
         if x?
-            x.end()
+            try
+                x.end()
+            catch err
+                # pass
 
     # enter fullscreen mode
     fullscreen: () =>

@@ -18,6 +18,10 @@ DEFAULT_TIMEOUT_DELAY_MS = DEFAULT_TIMEOUS_MS * 4
 
 QUERY_ALERT_THRESH_MS=5000
 
+# this is a limit for each query, unless timeout_s is specified.
+# https://postgresqlco.nf/en/doc/param/statement_timeout/
+DEFAULT_STATEMENT_TIMEOUT_S = 30
+
 EventEmitter = require('events')
 
 fs      = require('fs')
@@ -36,6 +40,7 @@ if not pg?
 #pg      = require('pg')
 
 winston      = require('./winston-metrics').get_logger('postgres')
+{do_query_with_pg_params} = require('./postgres/set-pg-params')
 
 misc_node = require('smc-util-node/misc_node')
 
@@ -65,6 +70,7 @@ class exports.PostgreSQL extends EventEmitter    # emits a 'connect' event whene
                                     # identical permission checks in a single user query.
             cache_size      : 300   # cache this many queries; use @_query(cache:true, ...) to cache result
             concurrent_warn : 500
+            concurrent_heavily_loaded : 70 # when concurrent hits this, consider load "heavy"; this changes home some queries behave to be faster but provide less info
             ensure_exists   : true  # ensure database exists on startup (runs psql in a shell)
             timeout_ms      : DEFAULT_TIMEOUS_MS # **IMPORTANT: if *any* query takes this long, entire connection is terminated and recreated!**
             timeout_delay_ms : DEFAULT_TIMEOUT_DELAY_MS # Only reconnect on timeout this many ms after connect.  Motivation: on initial startup queries may take much longer due to competition with other clients.
@@ -85,6 +91,7 @@ class exports.PostgreSQL extends EventEmitter    # emits a 'connect' event whene
             @_host = opts.host
             @_port = 5432
         @_concurrent_warn = opts.concurrent_warn
+        @_concurrent_heavily_loaded = opts.concurrent_heavily_loaded
         @_user = opts.user
         @_database = opts.database
         @_password = opts.password ? read_db_password_from_disk()
@@ -295,10 +302,6 @@ class exports.PostgreSQL extends EventEmitter    # emits a 'connect' event whene
                     cb()
 
             (cb) =>
-                # CRITICAL!  At scale, this query
-                #    SELECT * FROM file_use WHERE project_id = any(select project_id from projects where users ? '25e2cae4-05c7-4c28-ae22-1e6d3d2e8bb3') ORDER BY last_edited DESC limit 100;
-                # will take forever due to the query planner using a nestloop scan.  We thus
-                # disable doing so!
                 @_connect_time = new Date()
                 locals.i = 0
 
@@ -310,14 +313,17 @@ class exports.PostgreSQL extends EventEmitter    # emits a 'connect' event whene
                         cb("hung")
                         cb = undefined
                     timeout = setTimeout(it_hung, 15000)
-                    dbg("now connected; disabling nestloop query planning for client #{locals.i}")
+                    dbg("now connected; checking if we can actually query the DB via client #{locals.i}")
                     locals.i += 1
-                    client.query "SET enable_nestloop TO off", (err) =>
-                        if err
-                            dbg("disabling nestloop failed for client #{locals.i}")
-                        else
-                            dbg("disabling nestloop done for client #{locals.i}")
+                    client.query "SELECT NOW()", (err) =>
                         clearTimeout(timeout)
+                        cb(err)
+                async.map(locals.clients, f, cb)
+            (cb) =>
+                # we set a statement_timeout, to avoid queries locking up PG
+                f = (client, cb) =>
+                    statement_timeout_ms = DEFAULT_STATEMENT_TIMEOUT_S * 1000 # in millisecs
+                    client.query "SET statement_timeout TO #{statement_timeout_ms}", (err) =>
                         cb(err)
                 async.map(locals.clients, f, cb)
             (cb) =>
@@ -423,11 +429,13 @@ class exports.PostgreSQL extends EventEmitter    # emits a 'connect' event whene
             offset      : undefined
             safety_check: true
             retry_until_success : undefined  # if given, should be options to misc.retry_until_success
+            pg_params   : undefined  # key/value map of postgres parameters, which will be set for the query in a single transaction
+            timeout_s   : undefined  # by default, there is a "statement_timeout" set. set to 0 to disable or a number in seconds
             cb          : undefined
 
         # quick check for write query against read-only connection
         if @is_standby and (opts.set? or opts.jsonb_set? or opts.jsonb_merge?)
-            opts.cb("set queries against standby not allowed")
+            opts.cb?("set queries against standby not allowed")
             return
 
         if opts.retry_until_success
@@ -442,7 +450,7 @@ class exports.PostgreSQL extends EventEmitter    # emits a 'connect' event whene
                 cb       : (err) =>
                     if err
                         dbg("FAILED to connect -- #{err}")
-                        opts.cb("database is down (please try later)")
+                        opts.cb?("database is down (please try later)")
                     else
                         dbg("connected, now doing query")
                         @__do_query(opts)
@@ -467,16 +475,15 @@ class exports.PostgreSQL extends EventEmitter    # emits a 'connect' event whene
         # calls the original cb.
         retry_opts.cb = (err) =>
             if err
-                orig_cb(err)
+                orig_cb?(err)
             else
-                orig_cb(args...)
+                orig_cb?(args...)
 
         # OK, now start it attempting.
         misc.retry_until_success(retry_opts)
 
-
     __do_query: (opts) =>
-        dbg = @_dbg("_query('#{opts.query}',id='#{misc.uuid().slice(0,6)}')")
+        dbg = @_dbg("_query('#{misc.trunc(opts.query?.replace(/\n/g, " "),250)}',id='#{misc.uuid().slice(0,6)}')")
         if not @is_connected()
             # TODO: should also check that client is connected.
             opts.cb?("client not yet initialized")
@@ -710,7 +717,7 @@ class exports.PostgreSQL extends EventEmitter    # emits a 'connect' event whene
         @_concurrent_queries += 1
         dbg("query='#{opts.query} (concurrent=#{@_concurrent_queries})'")
 
-        @concurrent_counter.labels('started').inc(1)
+        @concurrent_counter?.labels('started').inc(1)
         try
             start = new Date()
             if @_timeout_ms and @_timeout_delay_ms
@@ -746,8 +753,8 @@ class exports.PostgreSQL extends EventEmitter    # emits a 'connect' event whene
                     clearTimeout(timer)
                 query_time_ms = new Date() - start
                 @_concurrent_queries -= 1
-                @query_time_histogram.observe({table:opts.table ? ''}, query_time_ms)
-                @concurrent_counter.labels('ended').inc(1)
+                @query_time_histogram?.observe({table:opts.table ? ''}, query_time_ms)
+                @concurrent_counter?.labels('ended').inc(1)
                 if err
                     dbg("done (concurrent=#{@_concurrent_queries}), (query_time_ms=#{query_time_ms}) -- error: #{err}")
                     err = 'postgresql ' + err
@@ -758,14 +765,26 @@ class exports.PostgreSQL extends EventEmitter    # emits a 'connect' event whene
                 opts.cb?(err, result)
                 if query_time_ms >= QUERY_ALERT_THRESH_MS
                     dbg("QUERY_ALERT_THRESH: query_time_ms=#{query_time_ms}\nQUERY_ALERT_THRESH: query='#{opts.query}'\nQUERY_ALERT_THRESH: params='#{misc.to_json(opts.params)}'")
-            client.query(opts.query, opts.params, query_cb)
+
+            if opts.timeout_s? and typeof opts.timeout_s == 'number' and opts.timeout_s >= 0
+                dbg("set query timeout to #{opts.timeout_s}secs")
+                opts.pg_params ?= {}
+                # the actual param is in milliseconds
+                # https://postgresqlco.nf/en/doc/param/statement_timeout/
+                opts.pg_params.statement_timeout = 1000 * opts.timeout_s
+
+            if opts.pg_params?
+                dbg("run query with specific postgres parameters in a transaction")
+                do_query_with_pg_params(client: client, query: opts.query, params: opts.params, pg_params:opts.pg_params, cb: query_cb)
+            else
+                client.query(opts.query, opts.params, query_cb)
 
         catch e
             # this should never ever happen
             dbg("EXCEPTION in client.query: #{e}")
             opts.cb?(e)
             @_concurrent_queries -= 1
-            @concurrent_counter.labels('ended').inc(1)
+            @concurrent_counter?.labels('ended').inc(1)
         return
 
     # Special case of query for counting entries in a table.
@@ -981,6 +1000,11 @@ class exports.PostgreSQL extends EventEmitter    # emits a 'connect' event whene
         f = (info, cb) =>
             query = info.query
             # Shorthand index is just the part in parens.
+            # 2020-10-12: it makes total sense to add CONCURRENTLY to this index command to avoid locking up the table,
+            # but the first time we tried this in production (postgres 10), it just made "invalid" indices.
+            # the problem might be that several create index commands were issued rapidly, which trew this off
+            # So, for now, it's probably best to either create them manually first (concurrently) or be
+            # aware that this does lock up briefly.
             query = "CREATE INDEX #{info.name} ON #{table} #{query}"
             @_query
                 query : query
@@ -1125,6 +1149,7 @@ class exports.PostgreSQL extends EventEmitter    # emits a 'connect' event whene
                 do_task = (task, cb) =>
                     switch task.action
                         when 'create'
+                            # ATTN if you consider adding CONCURRENTLY to create index, read the note earlier above about this
                             @_query
                                 query : "CREATE INDEX #{task.name} ON #{table} #{task.query}"
                                 cb    : cb
@@ -1163,7 +1188,7 @@ class exports.PostgreSQL extends EventEmitter    # emits a 'connect' event whene
                 @_get_tables (err, t) =>
                     psql_tables = t
                     dbg("psql_tables = #{misc.to_json(psql_tables)}")
-                    goal_tables = (t for t,s of SCHEMA when t not in psql_tables and not s.virtual)
+                    goal_tables = (t for t,s of SCHEMA when t not in psql_tables and not s.virtual and s.durability != 'ephemeral')
                     dbg("goal_tables = #{misc.to_json(goal_tables)}")
                     cb(err)
             (cb) =>
@@ -1200,6 +1225,9 @@ class exports.PostgreSQL extends EventEmitter    # emits a 'connect' event whene
     # Return the number of outstanding concurrent queries.
     concurrent: =>
         return @_concurrent_queries ? 0
+
+    is_heavily_loaded: =>
+        return @_concurrent_queries >= @_concurrent_heavily_loaded
 
     # Compute the sha1 hash (in hex) of the input arguments, which are
     # converted to strings (via json) if they are not strings, then concatenated.

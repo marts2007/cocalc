@@ -17,9 +17,77 @@ licenses for different purposes (e.g., one license for faculty and one license
 for students).
 */
 
-import { is_valid_uuid_string } from "../misc2";
+import { is_valid_uuid_string, plural } from "../misc";
 import { Table } from "./types";
 import { SCHEMA } from "./index";
+import { TypedMap } from "../../smc-webapp/app-framework/TypedMap";
+
+export interface Quota {
+  ram?: number;
+  dedicated_ram?: number;
+  cpu?: number;
+  dedicated_cpu?: number;
+  disk?: number;
+  always_running?: boolean;
+  member?: boolean;
+  user?: "academic" | "business";
+}
+
+export type QuotaMap = TypedMap<Quota>;
+
+// For typescript use of these from user side, we make this available:
+export interface SiteLicense {
+  id: string;
+  title?: string;
+  description?: string;
+  info?: object;
+  expires?: Date;
+  activates?: Date;
+  created: Date;
+  last_used?: Date;
+  managers?: string[];
+  restricted?: boolean;
+  upgrades?: object;
+  quota?: Quota;
+  run_limit?: number;
+  apply_limit?: number;
+}
+
+export function describe_quota(quota: Quota, short?: boolean): string {
+  let desc: string = "";
+  if (!short) {
+    desc =
+      (quota.user == "business" ? "Business" : "Academic") +
+      " license providing ";
+  }
+  const v: string[] = [];
+  if (quota.ram) {
+    v.push(`${quota.ram}GB RAM`);
+  }
+  if (quota.cpu) {
+    v.push(`${quota.cpu} shared ${plural(quota.cpu, "CPU")}`);
+  }
+  if (quota.disk) {
+    v.push(`${quota.disk}GB disk`);
+  }
+  if (quota.dedicated_ram) {
+    v.push(`${quota.dedicated_ram}GB dedicated RAM`);
+  }
+  if (quota.dedicated_cpu) {
+    v.push(
+      `${quota.dedicated_cpu} dedicated ${plural(quota.dedicated_cpu, "CPU")}`
+    );
+  }
+  if (quota.member) {
+    v.push("member" + (short ? "" : " hosting"));
+  }
+  if (quota.always_running) {
+    v.push("always running");
+  }
+  v.push("network"); // always provided, because we trust customers.
+  desc += v.join(", ");
+  return desc;
+}
 
 Table({
   name: "site_licenses",
@@ -63,7 +131,8 @@ Table({
     },
     managers: {
       type: "array",
-      pg_type: "TEXT[]",
+      pg_type:
+        "TEXT[]" /* TODO/NOTE: I made a mistake -- this should have been UUID[]! */,
       desc:
         "A list of the account_id's of users that are allowed to manage how this site license is being used.",
     },
@@ -75,7 +144,12 @@ Table({
     upgrades: {
       type: "map",
       desc:
-        "Map of the upgrades that are applied to a project when it has this site license; this is the same as the settings field of a project, so e.g., {cores: 1.5, cpu_shares: 768, disk_quota: 1000, memory: 2000, mintime: 36000000, network: 0}.",
+        "Map of the upgrades that are applied to a project when it has this site license; this is the same as the settings field of a project, so e.g., {cores: 1.5, cpu_shares: 768, disk_quota: 1000, memory: 2000, mintime: 36000000, network: 0}.  This matches with our older purchases and our internal system.  Instead of this one can give quota.",
+    },
+    quota: {
+      type: "map",
+      desc:
+        "The exact quota a project using this license gets -- {ram: total amount of memory in GB, cpu: total number of shared vCPUs, disk:total GB of disk space, always_running:true/false, member:true/false, user:'academic'|'business'}.  (Plan is) that such a license does not provide upgrades, but instead a fixed quota.",
     },
     run_limit: {
       type: "integer",
@@ -87,6 +161,8 @@ Table({
       desc:
         "The maximum number of projects that may simultaneously have this license applied to them.  When this is exceeded, older projects have the license automatically removed.  If this changes how the projects are upgraded, then those projects are stopped.",
     },
+    // todo: add a subscription field in case this license is paid for by a subscription. We periodically check
+    // that the subscription is still valid, otherwise we expire the license.
   },
   rules: {
     desc: "Site Licenses",
@@ -110,6 +186,7 @@ Table({
           managers: null,
           restricted: null,
           upgrades: null,
+          quota: null,
           run_limit: null,
           apply_limit: null,
         },
@@ -128,6 +205,7 @@ Table({
           managers: null,
           restricted: null,
           upgrades: null,
+          quota: null,
           run_limit: null,
           apply_limit: null,
         },
@@ -136,7 +214,7 @@ Table({
   },
 });
 
-const MATCHING_SITE_LICENSES_LIMIT = 50; // pretty arbitrary limit.
+const MATCHING_SITE_LICENSES_LIMIT = 20; // arbitrary limit.
 Table({
   name: "matching_site_licenses",
   fields: {
@@ -155,6 +233,7 @@ Table({
     managers: true,
     restricted: true,
     upgrades: true,
+    quota: true,
     run_limit: true,
     apply_limit: true,
   },
@@ -180,6 +259,7 @@ Table({
           managers: null,
           restricted: null,
           upgrades: null,
+          quota: null,
           run_limit: null,
           apply_limit: null,
         },
@@ -431,10 +511,13 @@ Table({
   fields: {
     id: SCHEMA.site_licenses.fields.id, // must be specified or it is an error
     title: SCHEMA.site_licenses.fields.title,
+    description: SCHEMA.site_licenses.fields.description,
     expires: SCHEMA.site_licenses.fields.expires,
     activates: SCHEMA.site_licenses.fields.activates,
     upgrades: SCHEMA.site_licenses.fields.upgrades,
+    quota: SCHEMA.site_licenses.fields.quota,
     run_limit: SCHEMA.site_licenses.fields.run_limit,
+    managers: SCHEMA.site_licenses.fields.managers,
     running: {
       type: "integer",
       desc:
@@ -457,10 +540,13 @@ Table({
         fields: {
           id: null,
           title: null,
+          description: null,
           expires: null,
           activates: null,
           upgrades: null,
+          quota: null,
           run_limit: null,
+          managers: null,
           running: null,
           is_manager: null,
         },
@@ -518,14 +604,26 @@ Table({
   },
 });
 
-/* Way to get the ids of the all the licenses that a given user is a manager of. */
+/* Way to get all the licenses that a given user is a manager of. */
 Table({
   name: "manager_site_licenses",
   fields: {
     id: true,
+    title: true,
+    description: true,
+    info: true,
+    expires: true,
+    activates: true,
+    created: true,
+    last_used: true,
+    managers: true,
+    upgrades: true,
+    quota: true,
+    run_limit: true,
+    apply_limit: true,
   },
   rules: {
-    virtual: true, // don't make an actual table
+    virtual: "site_licenses", // don't make an actual table
     desc: "Licenses that user doing the query is a manager of.",
     anonymous: false,
     primary_key: ["id"],
@@ -534,6 +632,18 @@ Table({
         admin: false,
         fields: {
           id: null,
+          title: null,
+          description: null,
+          info: null,
+          expires: null,
+          activates: null,
+          created: null,
+          last_used: null,
+          managers: null,
+          upgrades: null,
+          quota: null,
+          run_limit: null,
+          apply_limit: null,
         },
         // Actual query is implemented using this code below rather than an actual query directly.
         // We also completely ignore the user-requested fields and just return everything, since
@@ -549,6 +659,30 @@ Table({
               undefined,
               await database.manager_site_licenses(opts.account_id)
             );
+          } catch (err) {
+            cb(err);
+          }
+        },
+      },
+      set: {
+        // set is so managers of a license can easily change the title/description at any time
+        admin: false,
+        fields: {
+          id: true,
+          title: true,
+          description: true,
+          managers: true,
+        },
+        async instead_of_change(
+          database,
+          _old_value,
+          new_val,
+          account_id,
+          cb
+        ): Promise<void> {
+          try {
+            await database.site_license_manager_set(account_id, new_val);
+            cb();
           } catch (err) {
             cb(err);
           }

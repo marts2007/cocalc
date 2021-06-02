@@ -34,7 +34,8 @@
 // Then restart the hubs.
 
 import { Router } from "express";
-import { callback2 as cb2 } from "../smc-util/async-utils";
+import * as ms from "ms";
+import { callback2 as cb2 } from "smc-util/async-utils";
 import * as debug from "debug";
 const LOG = debug("hub:auth");
 import { join as path_join } from "path";
@@ -42,7 +43,7 @@ import * as uuid from "node-uuid";
 import * as passport from "passport";
 import * as dot from "dot-object";
 import * as _ from "lodash";
-const misc = require("smc-util/misc");
+import * as misc from "smc-util/misc";
 import * as message from "smc-util/message"; // message protocol between front-end and back-end
 const sign_in = require("./sign-in");
 import * as Cookies from "cookies";
@@ -73,7 +74,7 @@ type login_info_keys =
   | "full_name"
   | "emails";
 
-interface PassportStrategyDB extends PassportStrategy {
+export interface PassportStrategyDB extends PassportStrategy {
   clientID?: string; // Google, Twitter, ... and OAuth2
   clientSecret?: string; // Google, Twitter, ... and OAuth2
   authorizationURL?: string; // OAuth2
@@ -82,6 +83,7 @@ interface PassportStrategyDB extends PassportStrategy {
   login_info?: { [key in login_info_keys]?: string };
   public?: boolean; // if true it's a public SSO. this is only used in the UI, i.e. when there are no public ones, we allow token based email sign up
   disabled?: boolean; // if true, ignore this entry. default false.
+  exclusive_domains?: string[];
 }
 
 const { defaults, required } = misc;
@@ -323,6 +325,13 @@ interface InitPassport {
   cb: (err?) => void;
 }
 
+// singleton
+let pp_manager: PassportManager | null = null;
+
+export function get_passport_manager() {
+  return pp_manager;
+}
+
 export async function init_passport(opts: InitPassport) {
   opts = defaults(opts, {
     router: required,
@@ -332,9 +341,11 @@ export async function init_passport(opts: InitPassport) {
     cb: required,
   });
 
-  const pp_initializer = new PassportManager(opts);
   try {
-    await pp_initializer.init();
+    if (pp_manager == null) {
+      pp_manager = new PassportManager(opts);
+      await pp_manager.init();
+    }
     opts.cb();
   } catch (err) {
     opts.cb(err);
@@ -363,7 +374,7 @@ interface PassportLoginLocals {
   api_key: string | undefined;
 }
 
-class PassportManager {
+export class PassportManager {
   // express js, passed in from hub's main file
   readonly router: Router;
   // the database, for various server queries
@@ -445,9 +456,7 @@ class PassportManager {
     res.json(data);
   }
 
-  // version 2 tells the web client a little bit more.
-  // the additional info is used to render customizeable SSO icons.
-  private strategies_v2(res): void {
+  public get_strategies_v2(): PassportStrategy[] {
     const data: PassportStrategy[] = [];
     for (const name in this.strategies) {
       if (name === "site_conf") continue;
@@ -458,10 +467,17 @@ class PassportManager {
         "type",
         "icon",
         "public",
+        "exclusive_domains",
       ]);
       data.push(info);
     }
-    res.json(data);
+    return data;
+  }
+
+  // version 2 tells the web client a little bit more.
+  // the additional info is used to render customizeable SSO icons.
+  private strategies_v2(res): void {
+    res.json(this.get_strategies_v2());
   }
 
   async init(): Promise<void> {
@@ -470,7 +486,7 @@ class PassportManager {
     dbg("");
 
     // initialize use of middleware
-    this.router.use(express_session({ secret: misc.uuid() })); // secret is totally random and per-hub session
+    this.router.use(express_session({ secret: uuid.v4() })); // secret is totally random and per-hub session
     this.router.use(passport.initialize());
     this.router.use(passport.session());
 
@@ -516,6 +532,27 @@ class PassportManager {
         res.send(email_verified_successfully(url));
       } catch (err) {
         res.send(email_verification_problem(url, err));
+      }
+    });
+
+    // reset password: user email link contains a token, which we store in a session cookie.
+    // this prevents leaking that token to 3rd parties as a referrer
+    // endpoint has to match with smc-hub/password
+    this.router.get(`${AUTH_BASE}/password_reset`, (req, res) => {
+      if (typeof req.query.token !== "string") {
+        res.send("ERROR: reset token must be set");
+      } else {
+        const token = req.query.token.toLowerCase();
+        const cookies = new Cookies(req, res);
+        // to match smc-webapp/client/password-reset
+        const name = encodeURIComponent(`${this.base_url}PWRESET`);
+        cookies.set(name, token, {
+          maxAge: ms("5 minutes"),
+          secure: true,
+          overwrite: true,
+          httpOnly: false,
+        });
+        res.redirect("../app");
       }
     });
 
@@ -606,7 +643,7 @@ class PassportManager {
           "clientSecret",
           "userinfoURL",
           "public", // we don't need that info for initializing them
-        ]),
+        ]) as any,
       };
       inits.push(this.init_strategy(config));
     }
@@ -851,6 +888,7 @@ class PassportManager {
     opts.id = `${opts.id}`; // convert to string (id is often a number)
 
     try {
+      // do we have a valid remember me cookie for a given account_id already?
       await this.check_remember_me_cookie(locals);
       // do we already have a passport?
       await this.check_passport_exists(opts, locals);
@@ -876,6 +914,15 @@ class PassportManager {
     }
   } // end passport_login
 
+  // Check for a valid remember me cookie.  If there is one, set
+  // the account_id and has_valid_remember_me fields of locals.
+  // If not, do NOTHING except log some debugging messages.  Does
+  // not raise an exception.  See
+  //     https://github.com/sagemathinc/cocalc/issues/4767
+  // where this was failing the sign in if the remmeber me was
+  // invalid in any way, which is overkill... since rememember_me
+  // not being valid should just not entitle the user to having a
+  // a specific account_id.
   private async check_remember_me_cookie(
     locals: PassportLoginLocals
   ): Promise<void> {
@@ -886,7 +933,8 @@ class PassportManager {
     const value = locals.remember_me_cookie;
     const x: string[] = value.split("$");
     if (x.length !== 4) {
-      throw Error("badly formatted remember_me cookie");
+      dbg("badly formatted remember_me cookie");
+      return;
     }
     let hash;
     try {
@@ -906,7 +954,8 @@ class PassportManager {
         locals.account_id = signed_in_mesg.account_id;
         locals.has_valid_remember_me = true;
       } else {
-        throw Error("no valid remember_me token");
+        dbg("no valid remember_me token");
+        return;
       }
     }
   }

@@ -11,8 +11,12 @@ import { rtypes, rclass } from "../../app-framework";
 import { Icon, Loading, LoginLink } from "../../r_misc";
 import { DirectorySelector } from "../directory-selector";
 import { file_actions, ProjectActions } from "../../project_store";
-const misc = require("smc-util/misc");
-const {
+import { SelectProject } from "../../projects/select-project";
+import { in_snapshot_path } from "../utils";
+
+import * as misc from "smc-util/misc";
+
+import {
   Button,
   ButtonToolbar,
   Col,
@@ -22,13 +26,10 @@ const {
   FormGroup,
   Alert,
   Checkbox,
-} = require("react-bootstrap");
-const account = require("../../account");
+} from "react-bootstrap";
+import * as account from "../../account";
 
-const ConfigureShare = require("../../share/config/config").Configure;
-
-// TODO: delete this when the combobox is in r_misc
-const Combobox = require("react-widgets/lib/Combobox");
+import { Configure as ConfigureShare } from "../../share/config/config";
 
 type FileAction = undefined | keyof typeof file_actions;
 
@@ -50,7 +51,6 @@ interface ReduxProps {
   get_total_project_quotas: (
     project_id: string
   ) => { network: boolean } | undefined;
-  get_project_select_list: (project_id: string) => any;
 }
 
 interface State {
@@ -71,8 +71,7 @@ export const ActionBox = rclass<ReactProps>(
     static reduxProps = () => {
       return {
         projects: {
-          get_project_select_list: rtypes.func,
-          // get_total_project_quotas relys on this data
+          // get_total_project_quotas relies on this data
           // Will be removed by #1084
           project_map: rtypes.immutable.Map,
           get_total_project_quotas: rtypes.func,
@@ -113,7 +112,7 @@ export const ActionBox = rclass<ReactProps>(
       this.props.actions.set_file_action();
     };
 
-    action_key = (e: React.KeyboardEvent): void => {
+    action_key = (e): void => {
       switch (e.keyCode) {
         case 27:
           this.cancel_action();
@@ -273,9 +272,7 @@ export const ActionBox = rclass<ReactProps>(
 
     rename_or_duplicate_click(): void {
       const rename_dir = misc.path_split(
-        this.props.checked_files != null
-          ? this.props.checked_files.first()
-          : undefined
+        this.props.checked_files?.first() ?? ""
       ).head;
       const destination = (ReactDOM.findDOMNode(this.refs.new_name) as any)
         .value;
@@ -307,7 +304,7 @@ export const ActionBox = rclass<ReactProps>(
       const initial_ext = misc.filename_extension(
         this.props.checked_files.first()
       );
-      const current_ext = misc.filename_extension(this.state.new_name);
+      const current_ext = misc.filename_extension(this.state.new_name ?? "");
       if (initial_ext !== current_ext) {
         let message;
         if (initial_ext === "") {
@@ -331,16 +328,14 @@ export const ActionBox = rclass<ReactProps>(
     }
 
     valid_rename_input = (single_item: string): boolean => {
+      if (this.state.new_name == null) return false;
       if (
-        (this.state.new_name as any).length > 250 ||
+        this.state.new_name.length > 250 ||
         misc.contains(this.state.new_name, "/")
       ) {
         return false;
       }
-      return (
-        (this.state.new_name as any).trim() !==
-        misc.path_split(single_item).tail
-      );
+      return this.state.new_name.trim() !== misc.path_split(single_item).tail;
     };
 
     render_rename_or_duplicate(): JSX.Element {
@@ -487,26 +482,15 @@ export const ActionBox = rclass<ReactProps>(
 
     render_different_project_dialog(): JSX.Element | undefined {
       if (this.state.show_different_project) {
-        const data = this.props.get_project_select_list(this.props.project_id);
-        if (data == undefined) {
-          return <Loading />;
-        }
         return (
           <Col sm={4} style={{ color: "#666", marginBottom: "15px" }}>
             <h4>In the project</h4>
-            <Combobox
-              valueField="id"
-              textField="title"
-              data={data}
-              filter="contains"
-              defaultValue={
-                !this.props.public_view ? this.props.project_id : undefined
+            <SelectProject
+              at_top={[this.props.project_id]}
+              value={this.state.copy_destination_project_id}
+              onChange={(copy_destination_project_id) =>
+                this.setState({ copy_destination_project_id })
               }
-              placeholder="Select a project..."
-              onSelect={(value) =>
-                this.setState({ copy_destination_project_id: value.id })
-              }
-              messages={{ emptyFilter: "", emptyList: "" }}
             />
             {this.render_copy_different_project_options()}
           </Col>
@@ -521,7 +505,7 @@ export const ActionBox = rclass<ReactProps>(
             <Checkbox
               ref="delete_extra_files_checkbox"
               onChange={(e) =>
-                this.setState({ delete_extra_files: e.target.checked })
+                this.setState({ delete_extra_files: (e.target as any).checked })
               }
             >
               Delete extra files in target directory
@@ -529,7 +513,7 @@ export const ActionBox = rclass<ReactProps>(
             <Checkbox
               ref="overwrite_newer_checkbox"
               onChange={(e) =>
-                this.setState({ overwrite_newer: e.target.checked })
+                this.setState({ overwrite_newer: (e.target as any).checked })
               }
             >
               Overwrite newer versions of files
@@ -546,7 +530,7 @@ export const ActionBox = rclass<ReactProps>(
           onClick={() => this.setState({ show_different_project: true })}
           style={{ padding: "0px 5px 5px", fontWeight: 500 }}
         >
-          A Possibly Different Project
+          A Possibly Different Project...
         </Button>
       );
     }
@@ -604,6 +588,30 @@ export const ActionBox = rclass<ReactProps>(
       return true;
     }
 
+    render_copy_description(): JSX.Element {
+      for (const path of this.props.checked_files) {
+        if (in_snapshot_path(path)) {
+          return (
+            <>
+              <h4>Restore files from backup</h4>
+              {this.render_selected_files_list()}
+            </>
+          );
+        }
+      }
+      return (
+        <>
+          <h4>
+            Copy to a folder or{" "}
+            {this.state.show_different_project
+              ? "project"
+              : this.different_project_button()}
+          </h4>
+          {this.render_selected_files_list()}
+        </>
+      );
+    }
+
     render_copy(): JSX.Element {
       const { size } = this.props.checked_files;
       const signed_in = this.props.get_user_type() === "signed_in";
@@ -632,13 +640,7 @@ export const ActionBox = rclass<ReactProps>(
                 sm={this.state.show_different_project ? 4 : 5}
                 style={{ color: "#666" }}
               >
-                <h4>
-                  Copy to a folder or{" "}
-                  {this.state.show_different_project
-                    ? "project"
-                    : this.different_project_button()}
-                </h4>
-                {this.render_selected_files_list()}
+                {this.render_copy_description()}
               </Col>
               {this.render_different_project_dialog()}
               <Col
@@ -696,7 +698,10 @@ export const ActionBox = rclass<ReactProps>(
 
     render_share(): JSX.Element {
       // currently only works for a single selected file
-      const path = this.props.checked_files.first();
+      const path: string = this.props.checked_files.first() ?? "";
+      if (!path) {
+        return <></>;
+      }
       const public_data = this.props.file_map[misc.path_split(path).tail];
       if (public_data == undefined) {
         // directory listing not loaded yet... (will get re-rendered when loaded)

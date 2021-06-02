@@ -5,6 +5,8 @@
 
 // Site Customize -- dynamically customize the look of CoCalc for the client.
 
+import { List } from "immutable";
+
 import { redux, Redux, rclass, rtypes, Store, Actions } from "./app-framework";
 import * as React from "react";
 import {
@@ -49,7 +51,7 @@ for (const k in site_settings_conf) {
     typeof v.to_val === "function" ? v.to_val(v.default) : v.default;
   result.push([k, value]);
 }
-const defaults = dict(result);
+const defaults: any = dict(result);
 defaults.is_commercial = defaults.commercial;
 defaults._is_configured = false; // will be true after set via call to server
 
@@ -73,10 +75,12 @@ export interface CustomizeState {
   iframe_comm_hosts: string[];
   index_info_html: string;
   is_cocalc_com: boolean;
+  is_personal: boolean;
   kucalc: string;
   logo_rectangular: string;
   logo_square: string;
   max_upgrades: string;
+  nonfree_countries?: List<string>;
   onprem_quota_heading: string;
   organization_email: string;
   organization_name: string;
@@ -92,6 +96,11 @@ export interface CustomizeState {
   version_min_project: number;
   version_recommended_browser: number;
   versions: string;
+  // extra setting, injected by the hub, not the DB
+  // we expect this to follow "ISO 3166-1 Alpha 2" + K1 (Tor network) + XX (unknown)
+  // use a lib like https://github.com/michaelwittig/node-i18n-iso-countries
+  country: string;
+  // flag to signal "global.CUSTOMIZE" was applied
   _is_configured: boolean;
 }
 
@@ -140,11 +149,12 @@ export function reload_configuration() {
 
 // BACKEND injected by jsdom-support.ts
 if (typeof $ !== "undefined" && $ != undefined && global["BACKEND"] !== true) {
-  // the app.html page already loads the configuration, this is just a failsafe
+  // the app.html page loads the configuration and here we unpack the data
   const data = global["CUSTOMIZE"];
   if (data != null) {
     process_customize(Object.assign({}, data));
   } else {
+    // this is a fallback, in case something went terribly wrong
     reload_configuration();
   }
 }
@@ -490,19 +500,25 @@ declare var document;
 async function init_gtag() {
   await store.until_configured();
   if (!store.get("is_commercial")) return;
+  const w: any = window;
+  if (w?.document == null) {
+    // Make it so this code can be run on the backend (not in a browser).
+    // see https://github.com/sagemathinc/cocalc-landing/issues/2
+    return;
+  }
   // for commercial setup, enable conversion tracking...
   // the gtag initialization
-  (window as any).dataLayer = (window as any).dataLayer || [];
-  (window as any).gtag = function () {
-    (window as any).dataLayer.push(arguments);
+  w.dataLayer = w.dataLayer || [];
+  w.gtag = function () {
+    w.dataLayer.push(arguments);
   };
-  (window as any).gtag("js", new Date());
-  (window as any).gtag("config", gtag_id);
+  w.gtag("js", new Date());
+  w.gtag("config", gtag_id);
   // load tagmanager
-  const jtag = document.createElement("script");
+  const jtag = w.document.createElement("script");
   jtag.src = `https://www.googletagmanager.com/gtag/js?id=${theme.gtag_id}`;
   jtag.async = true;
-  document.getElementsByTagName("head")[0].appendChild(jtag);
+  w.document.getElementsByTagName("head")[0].appendChild(jtag);
 }
 
 init_gtag();

@@ -17,13 +17,15 @@ import { autograded_filename } from "../util";
 
 interface Props {
   nbgrader_scores: { [ipynb: string]: NotebookScores | string };
+  nbgrader_score_ids?: { [ipynb: string]: string[] };
   assignment_id: string;
   student_id: string;
   name: string;
+  show_all?: boolean;
+  set_show_all?: () => void;
 }
 
 interface State {
-  show_all: boolean;
   editing_score_filename?: string;
   editing_score_id?: string;
 }
@@ -31,7 +33,7 @@ interface State {
 export class NbgraderScores extends Component<Props, State> {
   constructor(props, state) {
     super(props, state);
-    this.state = { show_all: false };
+    this.state = {};
   }
 
   private get_actions(): CourseActions {
@@ -39,7 +41,7 @@ export class NbgraderScores extends Component<Props, State> {
   }
 
   private render_show_all(): Rendered {
-    if (!this.state.show_all) return;
+    if (!this.props.show_all) return;
     const v: Rendered[] = [];
     for (const filename in this.props.nbgrader_scores) {
       v.push(
@@ -107,9 +109,20 @@ export class NbgraderScores extends Component<Props, State> {
       );
     }
     const v: Rendered[] = [];
+
+    const ids: string[] = this.props.nbgrader_score_ids?.[filename] ?? [];
     for (const id in scores) {
-      v.push(this.render_score(filename, id, scores[id]));
+      if (!ids.includes(id)) {
+        ids.push(id);
+      }
     }
+
+    for (const id of ids) {
+      if (scores[id] != null) {
+        v.push(this.render_score(filename, id, scores[id]));
+      }
+    }
+
     const style = { padding: "5px" };
     return (
       <table
@@ -237,17 +250,13 @@ export class NbgraderScores extends Component<Props, State> {
 
   private render_more_toggle(action_required: boolean): Rendered {
     return (
-      <a
-        onClick={() => {
-          this.setState({ show_all: !this.state.show_all });
-        }}
-      >
+      <a onClick={() => this.props.set_show_all?.()}>
         {action_required ? (
           <>
             <Icon name="exclamation-triangle" />{" "}
           </>
         ) : undefined}
-        {this.state.show_all ? "Less" : "More..."}
+        {this.props.show_all ? "" : "Edit..."}
       </a>
     );
   }
@@ -265,7 +274,7 @@ export class NbgraderScores extends Component<Props, State> {
       this.props.nbgrader_scores
     );
     const action_required: boolean = !!(
-      !this.state.show_all &&
+      !this.props.show_all &&
       (manual_needed || error)
     );
     const backgroundColor = action_required ? "#fff1f0" : undefined;
@@ -275,7 +284,7 @@ export class NbgraderScores extends Component<Props, State> {
         style={{ marginTop: "5px", backgroundColor }}
         extra={this.render_more_toggle(action_required)}
         title={this.render_title(score, points, error)}
-        bodyStyle={this.state.show_all ? {} : { padding: 0 }}
+        bodyStyle={this.props.show_all ? {} : { padding: 0 }}
       >
         {this.render_show_all()}
       </Card>

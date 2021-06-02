@@ -11,9 +11,10 @@ import {
   is_valid_uuid_string,
   len,
   defaults,
+  server_minutes_ago,
 } from "smc-util/misc";
 import { Set } from "immutable";
-import { State, store } from "./store";
+import { ProjectsState, store } from "./store";
 import { load_all_projects, switch_to_project } from "./table";
 import { alert_message } from "../alerts";
 import { markdown_to_html } from "../markdown";
@@ -23,9 +24,15 @@ import { webapp_client } from "../webapp-client";
 import { set_window_title } from "../browser";
 import { once } from "smc-util/async-utils";
 import { COCALC_MINIMAL } from "../fullscreen";
+import { DEFAULT_COMPUTE_IMAGE } from "smc-util/compute-images";
+import { allow_project_to_run } from "../project/client-side-throttle";
+import { site_license_public_info } from "../site-licenses/util";
+import { Quota } from "smc-util/db-schema/site-licenses";
+
+export type Datastore = boolean | string[] | undefined;
 
 // Define projects actions
-export class ProjectsActions extends Actions<State> {
+export class ProjectsActions extends Actions<ProjectsState> {
   private async projects_table_set(
     obj: object,
     merge: "deep" | "shallow" | "none" | undefined = "deep"
@@ -61,7 +68,11 @@ export class ProjectsActions extends Actions<State> {
   // Save all open files in all projects to disk
   public save_all_files(): void {
     store.get("open_projects").filter((project_id) => {
-      this.redux.getProjectActions(project_id).save_all_files();
+      // ? is fine here since if project just got closed or collaborator
+      // removed from it, etc., that would be fine.  Save all is
+      // just a convenience for autosave. See
+      // https://github.com/sagemathinc/cocalc/issues/4789
+      this.redux.getProjectActions(project_id)?.save_all_files();
     });
   }
 
@@ -215,8 +226,11 @@ export class ProjectsActions extends Actions<State> {
     course_project_id: string,
     path: string,
     pay: Date | "",
-    account_id: string,
-    email_address: string
+    account_id: string | null,
+    email_address: string | null,
+    datastore: Datastore,
+    type: "student" | "shared" | "nbgrader",
+    student_project_functionality?
   ): Promise<void> {
     if (!(await this.have_project(project_id))) {
       const msg = `Can't set course info -- you are not a collaborator on project '${project_id}'.`;
@@ -224,13 +238,21 @@ export class ProjectsActions extends Actions<State> {
       return;
     }
     const course_info = store.get_course_info(project_id)?.toJS();
-    const course = {
+    const course: any = {
       project_id: course_project_id,
       path,
       pay,
-      account_id,
-      email_address,
+      datastore,
+      type,
     };
+    if (type == "student" && student_project_functionality != null) {
+      course.student_project_functionality = student_project_functionality;
+    }
+    // null for shared/nbgrader project, otherwise student project
+    if (account_id != null && email_address != null) {
+      course.account_id = account_id;
+      course.email_address = email_address;
+    }
     // json_stable -- I'm tired and this needs to just work for comparing.
     if (json_stable(course_info) === json_stable(course)) {
       // already set as required; do nothing
@@ -254,7 +276,7 @@ export class ProjectsActions extends Actions<State> {
     } = defaults(opts, {
       title: "No Title",
       description: "No Description",
-      image: undefined,
+      image: DEFAULT_COMPUTE_IMAGE,
       start: false,
     });
     if (!opts2.image) {
@@ -563,6 +585,10 @@ export class ProjectsActions extends Actions<State> {
     merge: boolean = true
   ): Promise<void> {
     assert_uuid(project_id);
+    const account_id = this.redux.getStore("account").get_account_id();
+    if (!account_id) {
+      throw Error("user must be signed in");
+    }
     if (!merge) {
       // explicitly set every field not specified to 0
       upgrades = copy(upgrades);
@@ -572,19 +598,36 @@ export class ProjectsActions extends Actions<State> {
         }
       }
     }
+    // Will anything change?
+    const cur =
+      store
+        .getIn(["project_map", project_id, "users", account_id, "upgrades"])
+        ?.toJS() ?? {};
+    let nothing_will_change: boolean = true;
+    for (let quota in DEFAULT_QUOTAS) {
+      if ((upgrades[quota] ?? 0) != (cur[quota] ?? 0)) {
+        nothing_will_change = false;
+        break;
+      }
+    }
+    if (nothing_will_change) {
+      return;
+    }
+
     await this.projects_table_set({
       project_id,
       users: {
-        [this.redux.getStore("account").get_account_id()]: { upgrades },
+        [account_id]: { upgrades },
       },
     });
     // log the change in the project log
-    await this.redux.getProjectActions(project_id).log({
+    await this.project_log(project_id, {
       event: "upgrade",
       upgrades,
     });
   }
 
+  // Remove any upgrades and site licenses applied to this project.
   public async clear_project_upgrades(project_id: string): Promise<void> {
     assert_uuid(project_id);
     await this.apply_upgrades_to_project(project_id, {}, false);
@@ -593,10 +636,18 @@ export class ProjectsActions extends Actions<State> {
 
   // Use a site license key to upgrade a project.  This only has an
   // impact on actual upgrades when the project is restarted.
+  // Multiple licenses can be included in license_id separated
+  // by commas to add several at once.
   public async add_site_license_to_project(
     project_id: string,
     license_id: string
   ): Promise<void> {
+    if (license_id.indexOf(",") != -1) {
+      for (const id of license_id.split(",")) {
+        await this.add_site_license_to_project(project_id, id);
+      }
+      return;
+    }
     if (!is_valid_uuid_string(license_id)) {
       throw Error(
         `invalid license key '${license_id}' -- it must be a 36-character valid v4 uuid`
@@ -612,14 +663,24 @@ export class ProjectsActions extends Actions<State> {
     }
     site_license[license_id] = {};
     await this.projects_table_set({ project_id, site_license }, "shallow");
+    this.log_site_license_change(project_id, license_id, "add");
   }
 
-  // Removes a given (or all) site licenses from a project. If license_id is not
-  // set then removes all of them.
+  // Removes a given (or all) site licenses from a project. If license_id is empty
+  // string (or not set) then removes all of them.
+  // Multiple licenses can be included in license_id separated
+  // by commas to remove several at once.
   public async remove_site_license_from_project(
     project_id: string,
     license_id: string = ""
   ): Promise<void> {
+    if (license_id.indexOf(",") != -1) {
+      for (const id of license_id.split(",")) {
+        await this.remove_site_license_from_project(project_id, id);
+      }
+      return;
+    }
+
     const project = store.getIn(["project_map", project_id]);
     if (project == null) {
       return; // nothing to do
@@ -642,39 +703,192 @@ export class ProjectsActions extends Actions<State> {
       }
     }
     await this.projects_table_set({ project_id, site_license }, "shallow");
+    this.log_site_license_change(project_id, license_id, "remove");
   }
 
-  public async start_project(project_id: string): Promise<void> {
-    await this.projects_table_set({
-      project_id,
-      action_request: { action: "start", time: webapp_client.server_time() },
-    });
-    // Doing an exec further increases the chances project will be
-    // definitely running in all environments (cocalc-docker, kucalc, etc).
-    await webapp_client.project_client.exec({
-      project_id,
-      command: "pwd",
+  private async log_site_license_change(
+    project_id: string,
+    license_id: string,
+    action: "add" | "remove"
+  ): Promise<void> {
+    if (!is_valid_uuid_string(project_id)) {
+      throw Error(`invalid project_id "${project_id}"`);
+    }
+    let info;
+    if (!license_id) {
+      info = { title: "All licenses" };
+      action = "remove";
+    } else {
+      if (!is_valid_uuid_string(license_id)) {
+        throw Error(`invalid license_id "${license_id}"`);
+      }
+      try {
+        info = await site_license_public_info(license_id);
+      } catch (err) {
+        // happens if the license is not valid.
+        info = { title: `${err}` };
+      }
+    }
+    if (!info) return;
+    const quota: Quota | undefined = info.quota;
+    const title: string = info.title ?? "";
+    await this.project_log(project_id, {
+      event: "license",
+      action,
+      license_id,
+      quota,
+      title,
     });
   }
 
-  public async stop_project(project_id: string): Promise<void> {
-    await this.projects_table_set({
+  public async project_log(project_id: string, entry): Promise<void> {
+    await this.redux.getProjectActions(project_id).log(entry);
+  }
+
+  // Sets site licenses for project to exactly license_id.
+  // Multiple licenses can be included in license_id separated
+  // by commas to set several at once.
+  public async set_site_license(
+    project_id: string,
+    license_id: string = ""
+  ): Promise<void> {
+    const project = store.getIn(["project_map", project_id]);
+    if (project == null) {
+      return; // nothing to do -- not a project we know/manage
+    }
+    const site_license = project.get("site_license")?.toJS() ?? {};
+    if (!license_id && len(site_license) === 0) {
+      // common special case that is easy -- set to empty and is already empty
+      return;
+    }
+    let changed: boolean = false;
+    for (const id in site_license) {
+      if (license_id.indexOf(id) == -1) {
+        changed = true;
+        site_license[id] = null;
+        this.log_site_license_change(project_id, license_id, "remove");
+      }
+    }
+    for (const id of license_id.split(",")) {
+      if (site_license[id] == null) {
+        changed = true;
+        site_license[id] = {};
+        this.log_site_license_change(project_id, license_id, "add");
+      }
+    }
+    if (changed) {
+      await this.projects_table_set({ project_id, site_license }, "shallow");
+    }
+  }
+
+  private current_action_request(project_id: string): string | undefined {
+    const action_request = store.getIn([
+      "project_map",
       project_id,
-      action_request: { action: "stop", time: webapp_client.server_time() },
+      "action_request",
+    ]);
+    if (action_request == null || action_request.get("action") == null) {
+      // definitely nothing going on now.
+      return undefined;
+    }
+    const request_time = new Date(action_request.get("time"));
+    if (action_request.get("finished") >= request_time) {
+      // also definitely nothing going on, since finished time is greater than
+      // when we requested an action.
+      return undefined;
+    }
+    if (request_time <= server_minutes_ago(10)) {
+      // action_requst is old; just ignore it.
+      return undefined;
+    }
+
+    return action_request.get("action");
+  }
+
+  // return true, if it actually started the project
+  public async start_project(project_id: string): Promise<boolean> {
+    if (!allow_project_to_run(project_id)) {
+      return false;
+    }
+    const state = store.get_state(project_id);
+    if (state == "starting" || state == "running" || state == "stopping") {
+      return false;
+    }
+    let did_start = false;
+    const action_request = this.current_action_request(project_id);
+    if (action_request == null || action_request != "start") {
+      // need to make an action request:
+      this.project_log(project_id, {
+        event: "project_start_requested",
+      });
+      await this.projects_table_set({
+        project_id,
+        action_request: { action: "start", time: webapp_client.server_time() },
+      });
+      did_start = true;
+    }
+    // Wait until it is running
+    await store.async_wait({
+      timeout: 120,
+      until(store) {
+        return store.get_state(project_id) == "running";
+      },
     });
-    await this.redux.getProjectActions(project_id).log({
-      event: "project_stop_requested",
+    this.project_log(project_id, {
+      event: "project_started",
     });
+    return did_start;
+  }
+
+  // returns true, if it acutally stopped the project
+  public async stop_project(project_id: string): Promise<boolean> {
+    const state = store.get_state(project_id);
+    if (state == "stopping" || state == "opened" || state == "starting") {
+      return false;
+    }
+    let did_stop = false;
+    const action_request = this.current_action_request(project_id);
+    if (action_request == null || action_request != "stop") {
+      // need to do it!
+      this.project_log(project_id, {
+        event: "project_stop_requested",
+      });
+      await this.projects_table_set({
+        project_id,
+        action_request: { action: "stop", time: webapp_client.server_time() },
+      });
+      did_stop = true;
+    }
+
+    // Wait until it is no longer running or stopping.  We don't
+    // wait for "opened" because something or somebody else could
+    // have started the project and we missed that, and don't
+    // want to get stuck.
+    await store.async_wait({
+      timeout: 60,
+      until(store) {
+        const state = store.get_state(project_id);
+        return state != "running" && state != "stopping";
+      },
+    });
+    this.project_log(project_id, {
+      event: "project_stopped",
+    });
+    return did_stop;
   }
 
   public async restart_project(project_id: string): Promise<void> {
-    await this.projects_table_set({
-      project_id,
-      action_request: { action: "restart", time: webapp_client.server_time() },
-    });
-    await this.redux.getProjectActions(project_id).log({
+    if (!allow_project_to_run(project_id)) {
+      return;
+    }
+    this.project_log(project_id, {
       event: "project_restart_requested",
     });
+    const state = store.get_state(project_id);
+    if (state == "running") {
+      await this.stop_project(project_id);
+    }
+    await this.start_project(project_id);
   }
 
   // Explcitly set whether or not project is hidden for the given account
@@ -692,6 +906,9 @@ export class ProjectsActions extends Actions<State> {
         },
       },
     });
+    await this.project_log(project_id, {
+      event: hide ? "hide_project" : "unhide_project",
+    });
   }
 
   // Toggle whether or not project is hidden project
@@ -702,10 +919,12 @@ export class ProjectsActions extends Actions<State> {
   }
 
   public async delete_project(project_id: string): Promise<void> {
+    await this.clear_project_upgrades(project_id);
     await this.projects_table_set({
       project_id,
       deleted: true,
     });
+    await this.project_log(project_id, { event: "delete_project" });
   }
 
   // Toggle whether or not project is deleted.
@@ -718,6 +937,9 @@ export class ProjectsActions extends Actions<State> {
     await this.projects_table_set({
       project_id,
       deleted: !is_deleted,
+    });
+    await this.project_log(project_id, {
+      event: is_deleted ? "undelete_project" : "delete_project",
     });
   }
 

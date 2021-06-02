@@ -46,7 +46,7 @@ export class NoFiles extends React.PureComponent<Props> {
 
   handle_click = () => {
     if (this.props.file_search.length === 0) {
-      this.props.actions.toggle_new(true);
+      this.props.actions.set_active_tab('new');
     } else if (
       this.props.file_search[this.props.file_search.length - 1] === "/"
     ) {
@@ -79,11 +79,12 @@ export class NoFiles extends React.PureComponent<Props> {
 
   render_file_type_selection() {
     return (
-      <div>
+      <div style={{ marginTop: "15px" }}>
         <h4 style={{ color: "#666" }}>Or select a file type</h4>
         <FileTypeSelector
           project_id={this.props.project_id}
           create_file={this.props.create_file}
+          create_folder={this.props.create_folder}
         />
       </div>
     );

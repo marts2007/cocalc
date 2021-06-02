@@ -13,13 +13,10 @@ import * as immutable from "immutable";
 import { ButtonGroup, SelectCallback } from "react-bootstrap";
 import { Icon, r_join, DropdownMenu, MenuItem, MenuDivider } from "../r_misc";
 import { KeyboardShortcut } from "./keyboard-shortcuts";
-const misc_page = require("../misc_page");
-
-import { capitalize, copy, endswith } from "smc-util/misc2";
-
+import { open_new_tab } from "../misc-page";
+import { capitalize, copy, endswith } from "smc-util/misc";
 import { JupyterActions } from "./browser-actions";
 import { NotebookFrameActions } from "../frame-editors/jupyter-editor/cell-notebook/actions";
-
 import { get_help_links } from "./help-links";
 
 type MenuItemName =
@@ -101,6 +98,17 @@ export class TopMenubar0 extends Component<TopMenubarProps> {
   }
 
   private render_file(): Rendered {
+    if (this.props.actions.studentProjectFunctionality().disableActions) {
+      // Everything in this menu is either easily still available in
+      // project tabs or generaly something that downloads, so we
+      // just remove it.
+      // NOTE/TODO: When we rewrite this TopMenubar0 as a functional
+      // component, be sure to switch to use the
+      // useStudentProjectFunctionality hook so that this File menu
+      // immediately appears/disappears whenever the course field
+      // changes, rather than only when the notebook loads.
+      return;
+    }
     let script_entry: any = undefined;
     if (this.props.backend_kernel_info != null) {
       const ext = this.props.backend_kernel_info.getIn([
@@ -367,6 +375,7 @@ export class TopMenubar0 extends Component<TopMenubarProps> {
     const names: any[] = [
       `${this.props.kernel_state !== "busy" ? "<" : ""}interrupt kernel`,
       "confirm restart kernel",
+      "confirm halt kernel",
       "<Restart and...",
       ">confirm restart kernel and clear output",
       ">confirm restart kernel and run all cells",
@@ -444,7 +453,15 @@ export class TopMenubar0 extends Component<TopMenubarProps> {
     }
 
     if (typeof name != "string") {
-      throw Error("bug -- name must be a string at this point.");
+      // HEISENBUG: This was reported once in production and led to a complete browser crash, preventing
+      // the user to use Jupyter.  No clue how this is possible, and it's probably the result
+      // of some other mystery problem.  But it probably can't hurt to make this non-fatal,
+      // just in case it happens in some edge case that we're just not thinking of.
+      console.warn(
+        "bug -- name must be a string at this point; working around this.  name=",
+        name
+      );
+      name = `${name}`;
     }
 
     let disabled: boolean;
@@ -628,7 +645,7 @@ export const TopMenubar = rclass(TopMenubar0);
 
 function external_link(name: string, url: string): Rendered {
   return (
-    <MenuItem key={name} onClick={() => misc_page.open_new_tab(url)}>
+    <MenuItem key={name} onClick={() => open_new_tab(url)}>
       <Icon name="external-link" /> {name}
     </MenuItem>
   );

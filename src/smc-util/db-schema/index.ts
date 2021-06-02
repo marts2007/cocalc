@@ -26,7 +26,9 @@ import "./listings";
 import "./lti";
 import "./mentions";
 import "./password-reset";
+import "./project-info";
 import "./project-log";
+import "./project-status";
 import "./projects";
 import "./public-paths";
 import "./project-invite-tokens";
@@ -38,13 +40,16 @@ import "./stats";
 import "./storage-servers";
 import "./system-notifications";
 import "./tracking";
+import "./usage-info";
 import "./webapp-errors";
+import "./site-whitelabeling";
 
 export {
   DEFAULT_FONT_SIZE,
   NEW_FILENAMES,
   DEFAULT_NEW_FILENAMES,
   DEFAULT_COMPUTE_IMAGE,
+  FALLBACK_COMPUTE_IMAGE,
 } from "./defaults";
 
 export { site_settings_conf } from "./site-defaults";

@@ -7,7 +7,7 @@ import * as lodash from "lodash";
 import { Store } from "../app-framework/Store";
 import { AccountState } from "./types";
 import { get_total_upgrades } from "smc-util/upgrades";
-import * as misc from "smc-util/misc2";
+import * as misc from "smc-util/misc";
 import { Map, List } from "immutable";
 
 // Define account store
@@ -18,21 +18,6 @@ export class AccountStore extends Store<AccountState> {
   //   - 'signed_in'  : user has successfully authenticated and has an id
   constructor(name, redux) {
     super(name, redux);
-    misc.bind_methods(this, [
-      "get_user_type",
-      "get_account_id",
-      "get_terminal_settings",
-      "get_editor_settings",
-      "get_fullname",
-      "get_first_name",
-      "get_color",
-      "get_username",
-      "get_email_address",
-      "get_confirm_close",
-      "get_total_upgrades",
-      "is_paying_member",
-      "get_page_size",
-    ]);
     this.setup_selectors();
   }
 
@@ -118,7 +103,7 @@ export class AccountStore extends Store<AccountState> {
   }
 
   // Total ugprades this user is paying for (sum of all upgrades from subscriptions)
-  get_total_upgrades(): { [key: string]: number } {
+  get_total_upgrades(): { [key: string]: number } | undefined {
     const stripe_data = this.getIn([
       "stripe_customer",
       "subscriptions",
@@ -128,6 +113,8 @@ export class AccountStore extends Store<AccountState> {
   }
 
   // uses the total upgrades information to determine, if this is a paying member
+  // TODO: this is not used anywhere; but, if it was, it should also take into account
+  // being a license manager...
   is_paying_member(): boolean {
     const ups = this.get_total_upgrades();
     return (
@@ -143,6 +130,7 @@ export class AccountStore extends Store<AccountState> {
 // A user is anonymous if they have not provided a way to sign
 // in later (besides their cookie), i.e., if they have no
 // passport strategies and have not provided an email address.
+// In is_personal mode, user is never anonymous.
 function is_anonymous(
   is_logged_in: boolean,
   email_address: string | undefined | null,
@@ -159,6 +147,9 @@ function is_anonymous(
     return false;
   }
   if (lti_id != null && lti_id.size > 0) {
+    return false;
+  }
+  if ((window as any).CUSTOMIZE?.is_personal) {
     return false;
   }
   return true;
