@@ -42,7 +42,7 @@
     "posix": "^4.2.0",
     "prettier": "^2.1.1",
     "primus": "^7.3.4",
-    "primus-multiplex": "github:STRML/primus-multiplex",
+    "primus-multiplex": "github+https:STRML/primus-multiplex",
     "primus-responder": "^1.0.4",
     "prom-client": "^13.0.0",
     "prometheus-gc-stats": "^0.6.2",
