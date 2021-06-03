@@ -1723,13 +1723,6 @@ ${details}
         );
         
         const r = await nbgrader(opts);
-       #do not save solution to the students folder
-       # await this.write_autograded_notebook(
-       #      assignment,
-       #      student_id,
-       #      "graded_file_" + file,
-       #      r.autograde
-       # );
 
         console.log(student_id, "autograding finished successfully", {
           file,
