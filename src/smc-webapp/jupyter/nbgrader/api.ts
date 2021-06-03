@@ -45,7 +45,6 @@ export interface NBGraderAPIOptions {
 export interface NBGraderAPIResponse {
   output: any; // TODO
   ids: string[]; // the ordered id's of the test cells; order is the order in which they occur in the notebook.
-  autograde: any;
 }
 
 export async function nbgrader(
